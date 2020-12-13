@@ -1,5 +1,3 @@
-#![macro_escape]
-
 use crate::numbers::*;
 
 use std::ops::Index;
@@ -52,8 +50,8 @@ impl Index<Vec<usize>> for Array {
  
         let mut iter = indices.iter();
         let first = iter.next().unwrap();
-        // dimensions will always have at least one element
  
+        // dimensions will always have at least one element
         let index: usize = iter.zip(self.dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i);
         &self.values[index]
     }
@@ -97,7 +95,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_invalid_dimensions() { 
-        let matrix = array![array![ 
+        array![array![ 
             array![0.0], array![1.0]
         ],
         array![
