@@ -2,7 +2,7 @@
 An n-dimensional array implementation for Rust.
 
 # Example
-```[Rust]
+```Rust
 let a = Tensor::new(
     array![array![
         array![0.0, 1.0], array![2.0, 3.0]
