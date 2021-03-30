@@ -112,6 +112,15 @@ macro_rules! arr {
 }
 
 impl Array {
+    fn index_unchecked(&self, indices: Vec<usize>) -> &Float {
+        let mut iter = indices.iter();
+        let first = iter.next().unwrap();
+ 
+        // dimensions will always have at least one element
+        let index: usize = iter.zip(self.dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i);
+        &self.values[index]
+    }
+
     /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
@@ -253,12 +262,7 @@ impl Index<Vec<usize>> for Array {
             panic!("error: invalid indices supplied")
         } 
  
-        let mut iter = indices.iter();
-        let first = iter.next().unwrap();
- 
-        // dimensions will always have at least one element
-        let index: usize = iter.zip(self.dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i);
-        &self.values[index]
+        self.index_unchecked(indices)
     }
 }
 
@@ -268,10 +272,6 @@ fn add_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
 
 fn mul_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
     a.iter().zip(b).map(|(x, y)| x * y).collect::<Vec<Float>>()
-}
-
-fn matmul_values(a: &Array, b: &Array) -> Array {
-    arr![0.0]
 }
 
 impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
@@ -301,10 +301,12 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
 impl<'a, 'b> Array {
     fn matmul(a: &Array, b: &Array) -> Array {
+        // TODO use BLAS, and take slice of floats instead
         arr![0.0]
     }
 }
 
+// TODO test with array modification before backward call (poisoned).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +470,26 @@ mod tests {
         assert_eq!(*product.consumer_count.lock().unwrap(), 0);
         assert_eq!(*b.consumer_count.lock().unwrap(), 0);
         assert_eq!(*a.consumer_count.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_backawrd_control_flow() {
+        let a = arr![5.0];
+        let b = arr![2.0];
+        let mut c = arr![0.0];
+
+        for i in 0..10 {
+            c = &c + &(&a * &b);
+            if c.values[0] > 50.0 {
+                c = &c * &a;
+            }
+        }
+
+        c.backward(None);
+        assert_eq!(c, arr![195300.0]);
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![1.0]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![97650.0]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![232420.0]);
     }
 
     #[test]
