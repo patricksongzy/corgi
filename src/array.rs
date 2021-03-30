@@ -13,45 +13,79 @@ use std::sync::mpsc::Sender;
 use std::sync::mpsc::Receiver;
 use std::thread;
 
+/// Helper trait to construct `Array` structs.
 pub trait Arrays {
+    /// Constructs a new `Array`.
     fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array;
 }
 
+/// Implementation to construct `Array` structs by flattening other contained `Array` structs.
 impl Arrays for Vec<Array> {
+    /// Constructs a new `Array`, by flattening the contained `Array` structs, and keeping their dimensions.
     fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+        // check if any of the contained array dimensions mismatch
         let is_dimensions_valid = match self.split_first() {
             Some((first, elements)) => elements.iter().all(|item| *item.dimensions == *first.dimensions),
             None => true,
         };
 
         if !is_dimensions_valid {
-            panic!("error: invalid dimensions supplied");
+            panic!("error: contained array dimensions must all be the same");
         }
 
         let mut dimensions = vec![self.len()];
         dimensions.append(&mut (*self.first().unwrap().dimensions).clone());
 
         // take ownership if possible, but clone otherwise
-        let values = self.into_iter().map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone())).flatten().collect::<Vec<Float>>();
+        let values = self.into_iter().map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
+            .flatten().collect::<Vec<Float>>();
 
         Arrays::new((Arc::new(dimensions), Arc::new(values)), backward_op)
     }
 }
 
+/// Implementation to construct `Array` structs directly from a `Vec<Float>`.
 impl Arrays for Vec<Float> {
     fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         Arrays::new((Arc::new(vec![self.len()]), Arc::new(self)), backward_op)
     }
 }
 
+/// Implementation to construct `Array` structs by using `Arc<Vec<usize>>` as the dimensions, and `Arc<Vec<Float>>`
+/// as the values.
 impl<'v> Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         let (dimensions, values) = self;
-        Array { dimensions, values: values, children: Arc::new(Mutex::new(Vec::new())), consumer_count: Arc::new(Mutex::new(0)), backward_op, tx: Arc::new(Mutex::new(None)), gradient: Arc::new(Mutex::new(None)) }
+        Array {
+            dimensions,
+            values: values,
+            children: Arc::new(Mutex::new(Vec::new())),
+            consumer_count: Arc::new(Mutex::new(0)),
+            backward_op,
+            tx: Arc::new(Mutex::new(None)),
+            gradient: Arc::new(Mutex::new(None))
+        }
     }
 }
 
 // TODO add poisoned flag, if Array has been modified
+/// An n-dimensional differentiable Array.
+///
+/// # Examples
+/// ```
+/// #[macro_use]
+/// # extern crate ferric_ai;
+///
+/// use ferric_ai::array::*;
+///
+/// # fn main() {
+/// let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+/// let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]];
+///
+/// let mut p = &a * &b;
+/// p.backward(None);
+/// # }
+/// ```
 pub struct Array {
     dimensions: Arc<Vec<usize>>,
     values: Arc<Vec<Float>>,
@@ -78,11 +112,13 @@ macro_rules! arr {
 }
 
 impl Array {
+    /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
         self
     }
 
+    /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
             *child.consumer_count.lock().unwrap() += 1;
@@ -90,6 +126,11 @@ impl Array {
         }
     }
 
+    /// Awaits for deltas from all consumers, then continues the backward pass.
+    /// 
+    /// # Panics
+    ///
+    /// Panics if the current node has no consumers (is an end node).
     fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
         let mut consumer_count = self.consumer_count.lock().unwrap();
 
@@ -115,7 +156,12 @@ impl Array {
         self.backward(Some(delta));
     }
 
-    fn backward(&mut self, delta: Option<Array>) {
+    /// Performs the backward pass, computing gradients for all descendants.
+    /// 
+    /// # Panics
+    ///
+    /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
+    pub fn backward(&mut self, delta: Option<Array>) {
         let delta = match delta {
             Some(x) => x,
             None => {
@@ -172,7 +218,15 @@ impl Clone for Array {
             None => None,
         };
 
-        Array { dimensions: Arc::clone(&self.dimensions), values: Arc::clone(&self.values), children: Arc::clone(&self.children), consumer_count: Arc::clone(&self.consumer_count), backward_op, tx: Arc::clone(&self.tx), gradient: Arc::clone(&self.gradient) }
+        Array {
+            dimensions: Arc::clone(&self.dimensions),
+            values: Arc::clone(&self.values),
+            children: Arc::clone(&self.children),
+            consumer_count: Arc::clone(&self.consumer_count),
+            backward_op,
+            tx: Arc::clone(&self.tx),
+            gradient: Arc::clone(&self.gradient)
+        }
     }
 }
 
@@ -216,13 +270,19 @@ fn mul_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
     a.iter().zip(b).map(|(x, y)| x * y).collect::<Vec<Float>>()
 }
 
+fn matmul_values(a: &Array, b: &Array) -> Array {
+    arr![0.0]
+}
+
 impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     type Output = Array;
 
     #[inline]
     fn add(self, other: &Array) -> Array {
-        let backward_op = Arc::new(|_: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values)), None); 2]);
-        Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))), Some(backward_op)).with_children(vec![self.clone(), other.clone()])
+        let backward_op = Arc::new(|_: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&x.dimensions),
+            Arc::clone(&x.values)), None); 2]);
+        Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))), Some(backward_op))
+            .with_children(vec![self.clone(), other.clone()])
     }
 }
 
@@ -231,9 +291,11 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Array {
-        let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(mul_values(&c[1].values, &x.values))), None),
-                                                                   Arrays::new((Arc::clone(&c[1].dimensions), Arc::new(mul_values(&c[0].values, &x.values))), None)]);
-        Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))), Some(backward_op)).with_children(vec![self.clone(), other.clone()])
+        let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions),
+            Arc::new(mul_values(&c[1].values, &x.values))), None), Arrays::new((Arc::clone(&c[1].dimensions),
+            Arc::new(mul_values(&c[0].values, &x.values))), None)]);
+        Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))), Some(backward_op))
+            .with_children(vec![self.clone(), other.clone()])
     }
 }
 
