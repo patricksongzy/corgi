@@ -3,6 +3,7 @@ use crate::numbers::*;
 use std::ops;
 use std::ops::Index;
 
+use std::fmt;
 use std::mem;
 
 use std::sync::Arc;
@@ -13,11 +14,11 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 
 pub trait Arrays {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, Array) -> Vec<Array> + Send + Sync>>) -> Array;
+    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array;
 }
 
 impl Arrays for Vec<Array> {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         let is_dimensions_valid = match self.split_first() {
             Some((first, elements)) => elements.iter().all(|item| *item.dimensions == *first.dimensions),
             None => true,
@@ -38,15 +39,15 @@ impl Arrays for Vec<Array> {
 }
 
 impl Arrays for Vec<Float> {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         Arrays::new((Arc::new(vec![self.len()]), Arc::new(self)), backward_op)
     }
 }
 
 impl<'v> Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         let (dimensions, values) = self;
-        Array { dimensions, values: values, children: Arc::new(Mutex::new(Vec::new())), consumer_count: Arc::new(Mutex::new(0)), backward_op, tx: Arc::new(Mutex::new(None)) }
+        Array { dimensions, values: values, children: Arc::new(Mutex::new(Vec::new())), consumer_count: Arc::new(Mutex::new(0)), backward_op, tx: Arc::new(Mutex::new(None)), gradient: Arc::new(Mutex::new(None)) }
     }
 }
 
@@ -56,8 +57,9 @@ pub struct Array {
     values: Arc<Vec<Float>>,
     children: Arc<Mutex<Vec<Array>>>,
     consumer_count: Arc<Mutex<usize>>,
-    backward_op: Option<Arc<dyn Fn(&Vec<Array>, Array) -> Vec<Array> + Send + Sync>>,
+    backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>,
     tx: Arc<Mutex<Option<Sender<Array>>>>,
+    gradient: Arc<Mutex<Option<Array>>>,
 }
  
 #[macro_export]
@@ -76,14 +78,6 @@ macro_rules! arr {
 }
 
 impl Array {
-    // pub(crate) fn dimensions(&self) -> &Vec<usize> {
-    //     &self.dimensions
-    // }
-
-    // pub(crate) fn values(&self) -> &Vec<Float> {
-    //     &self.values
-    // }
-
     fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
         self
@@ -133,7 +127,7 @@ impl Array {
         match &self.backward_op {
             Some(x) => {
                 let children_guard = self.children.lock().unwrap();
-                let delta = (*x)(&children_guard, delta);
+                let delta = (*x)(&children_guard, &delta);
                 let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
@@ -165,6 +159,9 @@ impl Array {
                 }
             },
         }
+
+        let mut gradient_guard = self.gradient.lock().unwrap();
+        *gradient_guard = Some(delta);
     }
 }
 
@@ -175,7 +172,19 @@ impl Clone for Array {
             None => None,
         };
 
-        Array { dimensions: Arc::clone(&self.dimensions), values: Arc::clone(&self.values), children: Arc::clone(&self.children), consumer_count: Arc::clone(&self.consumer_count), backward_op, tx: Arc::clone(&self.tx) }
+        Array { dimensions: Arc::clone(&self.dimensions), values: Arc::clone(&self.values), children: Arc::clone(&self.children), consumer_count: Arc::clone(&self.consumer_count), backward_op, tx: Arc::clone(&self.tx), gradient: Arc::clone(&self.gradient) }
+    }
+}
+
+impl PartialEq for Array {
+    fn eq(&self, other: &Array) -> bool {
+        *self.dimensions == *other.dimensions && *self.values == *other.values
+    }
+}
+
+impl fmt::Debug for Array {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Array").field("dimensions", &*self.dimensions).field("values", &*self.values).finish()
     }
 }
 
@@ -212,7 +221,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
 
     #[inline]
     fn add(self, other: &Array) -> Array {
-        let backward_op = Arc::new(|_: &Vec<Array>, x: Array| vec![Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values)), None); 2]);
+        let backward_op = Arc::new(|_: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values)), None); 2]);
         Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))), Some(backward_op)).with_children(vec![self.clone(), other.clone()])
     }
 }
@@ -222,9 +231,15 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Array {
-        let backward_op = Arc::new(|c: &Vec<Array>, x: Array| vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(mul_values(&c[1].values, &x.values))), None),
+        let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(mul_values(&c[1].values, &x.values))), None),
                                                                    Arrays::new((Arc::clone(&c[1].dimensions), Arc::new(mul_values(&c[0].values, &x.values))), None)]);
         Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))), Some(backward_op)).with_children(vec![self.clone(), other.clone()])
+    }
+}
+
+impl<'a, 'b> Array {
+    fn matmul(a: &Array, b: &Array) -> Array {
+        arr![0.0]
     }
 }
 
@@ -254,8 +269,21 @@ mod tests {
         let b = arr![a.clone()];
         let c = arr![a.clone(), a.clone()];
 
-        assert_eq!(*b.values, vec![1.0, 2.0, 3.0]);
-        assert_eq!(*c.values, vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+        assert_eq!(b, arr![arr![1.0, 2.0, 3.0]]);
+        assert_eq!(c, arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+    }
+
+    #[test]
+    fn test_ne() {
+        let a = arr![1.0, 2.0, 3.0];
+        let b = arr![2.0, 2.0, 3.0];
+        
+        assert_ne!(a, b);
+
+        let c = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+        let d = arr![arr![1.0, 2.0], arr![3.0, 4.0], arr![5.0, 6.0]];
+
+        assert_ne!(c, d);
     }
     
     #[test]
@@ -317,11 +345,30 @@ mod tests {
         let sum = &a + &b;
         let product = &a * &b;
 
-        assert_eq!(*sum.dimensions, *sum_expect.dimensions);
-        assert_eq!(*sum.dimensions, *product_expect.dimensions);
+        assert_eq!(sum, sum_expect);
+        assert_eq!(product, product_expect);
+    }
 
-        assert_eq!(*sum.values, *sum_expect.values);
-        assert_eq!(*product.values, *product_expect.values);
+    #[test]
+    fn test_matmul() {
+        let a = arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0]
+        ];
+
+        let b = arr![
+            arr![5.0, 3.0],
+            arr![2.0, 6.0],
+            arr![1.0, 2.0]
+        ];
+
+        // TODO implement test
+        let result = Array::matmul(&a, &b);
+    }
+
+    #[test]
+    fn test_matmul_mult() {
+        // TODO implement test
     }
 
     #[test]
@@ -343,10 +390,10 @@ mod tests {
         let a = arr![5.0];
         let b = arr![2.0];
 
-        let mut product = &a * &b;
-        let result = (*product.backward_op.unwrap())(&vec![a, b], arr![1.0]);
+        let product = &a * &b;
+        let result = (*product.backward_op.unwrap())(&vec![a, b], &arr![1.0]);
         assert_eq!(result.len(), 2);
-        assert_eq!(result.iter().map(|x| (*x.values).clone()).collect::<Vec<Vec<Float>>>(), vec![vec![2.0], vec![5.0]]);
+        assert_eq!(result, vec![arr![2.0], arr![5.0]]);
     }
 
     #[test]
@@ -356,9 +403,9 @@ mod tests {
 
         let mut product = &a * &b;
         product.backward(None);
-        // assert_eq!(*product.consumer_count.lock().unwrap(), 0);
-        // assert_eq!(*b.consumer_count.lock().unwrap(), 0);
-        // assert_eq!(*a.consumer_count.lock().unwrap(), 0);
+        assert_eq!(*product.consumer_count.lock().unwrap(), 0);
+        assert_eq!(*b.consumer_count.lock().unwrap(), 0);
+        assert_eq!(*a.consumer_count.lock().unwrap(), 0);
     }
 
     #[test]
@@ -369,7 +416,31 @@ mod tests {
         let d = &c + &a;
         let mut e = &a * &d;
         e.backward(None);
-        thread::sleep(std::time::Duration::from_millis(10));
+
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![70.0, 16.0]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![25.0, 4.0]);
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![5.0, 2.0]);
+        assert_eq!(d.gradient.lock().unwrap().clone().unwrap(), arr![5.0, 2.0]);
+        assert_eq!(e.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 1.0]);
+    }
+    
+    #[test]
+    fn test_backward_intermediate() {
+        let a = arr![1.0, 2.0];
+        let b = arr![5.0, 3.0];
+        let c = &(&(&a * &b) + &a) * &b;
+        let mut product = &c * &a;
+        product.backward(None);
+
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![60.0, 48.0]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![11.0, 28.0]);
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 2.0]);
+        assert_eq!(product.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_backward_poisoned() {
+        // TODO modify array before backward is called
     }
 }
 
