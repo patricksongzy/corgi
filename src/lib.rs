@@ -1,6 +1,6 @@
-mod numbers;
+pub mod numbers;
 #[macro_use]
-mod array;
+pub mod array;
 
 #[cfg(test)]
 mod tests {
