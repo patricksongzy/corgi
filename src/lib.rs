@@ -1,12 +1,11 @@
 mod numbers;
 #[macro_use]
 mod array;
-mod tensor;
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn it_works() {
+    fn test_backward() {
         assert_eq!(2 + 2, 4);
     }
 }
