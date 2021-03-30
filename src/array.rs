@@ -74,9 +74,9 @@ impl<'v> Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
 /// # Examples
 /// ```
 /// #[macro_use]
-/// # extern crate ferric_ai;
+/// # extern crate corgi;
 ///
-/// use ferric_ai::array::*;
+/// use corgi::array::*;
 ///
 /// # fn main() {
 /// let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
@@ -96,6 +96,7 @@ pub struct Array {
     gradient: Arc<Mutex<Option<Array>>>,
 }
  
+// TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
 #[macro_export]
 macro_rules! arr {
     ( $( $x:expr ),* ) => {
@@ -428,6 +429,59 @@ mod tests {
 
         // TODO implement test
         let result = Array::matmul(&a, &b);
+    }
+
+    #[test]
+    fn test_matmul_nd() {
+        let a = arr![
+            arr![
+                arr![
+                    arr![1.0, 2.0, 3.0],
+                    arr![4.0, 5.0, 6.0]
+                ],
+                arr![
+                    arr![6.0, 5.0, 4.0],
+                    arr![3.0, 2.0, 1.0]
+                ]
+            ],
+            arr![
+                arr![
+                    arr![9.0, 8.0, 7.0],
+                    arr![4.0, 5.0, 6.0]
+                ],
+                arr![
+                    arr![6.0, 7.0, 8.0],
+                    arr![3.0, 2.0, 1.0]
+                ]
+            ]
+        ];
+
+        let b = arr![
+            arr![
+                arr![
+                    arr![5.0, 3.0],
+                    arr![2.0, 6.0],
+                    arr![1.0, 2.0]
+                ],
+                arr![
+                    arr![3.0, 6.0],
+                    arr![2.0, 5.0],
+                    arr![1.0, 4.0]
+                ]
+            ],
+            arr![
+                arr![
+                    arr![5.0, 3.0],
+                    arr![2.0, 6.0],
+                    arr![8.0, 7.0]
+                ],
+                arr![
+                    arr![8.0, 6.0],
+                    arr![5.0, 3.0],
+                    arr![4.0, 7.0]
+                ]
+            ]
+        ];
     }
 
     #[test]
