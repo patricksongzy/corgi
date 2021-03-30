@@ -1,5 +1,5 @@
 [package]
-name = "ferric-ai"
+name = "corgi"
 version = "0.1.0"
 authors = ["Patrick Song <32438365+patricksongzy@users.noreply.github.com>"]
 edition = "2018"
