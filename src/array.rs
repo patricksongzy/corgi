@@ -51,9 +51,16 @@ impl Arrays for Vec<Float> {
     }
 }
 
+impl Arrays for Vec<usize> {
+    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+        let product = self.iter().fold(1, |acc, x| acc * x);
+        Arrays::new((Arc::new(self), Arc::new(vec![0.0; product])), backward_op)
+    }
+}
+
 /// Implementation to construct `Array` structs by using `Arc<Vec<usize>>` as the dimensions, and `Arc<Vec<Float>>`
 /// as the values.
-impl<'v> Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
+impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
         let (dimensions, values) = self;
         Array {
@@ -113,15 +120,6 @@ macro_rules! arr {
 }
 
 impl Array {
-    fn index_unchecked(&self, indices: Vec<usize>) -> &Float {
-        let mut iter = indices.iter();
-        let first = iter.next().unwrap();
- 
-        // dimensions will always have at least one element
-        let index: usize = iter.zip(self.dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i);
-        &self.values[index]
-    }
-
     /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
@@ -256,15 +254,23 @@ impl Index<Vec<usize>> for Array {
     type Output = Float;
  
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
-        let is_indices_valid = indices.len() == self.dimensions.len()
-            && !indices.iter().zip(&*self.dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
-
-        if !is_indices_valid {
-            panic!("error: invalid indices supplied")
-        } 
- 
-        self.index_unchecked(indices)
+        &self.values[flatten_indices(indices, &*self.dimensions)]
     }
+}
+
+fn flatten_indices(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
+    let is_indices_valid = indices.len() == dimensions.len()
+        && !indices.iter().zip(&*dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
+
+    if !is_indices_valid {
+        panic!("error: invalid indices supplied")
+    } 
+
+    let mut iter = indices.iter();
+    let first = iter.next().unwrap();
+
+    // dimensions will always have at least one element
+    iter.zip(dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i)
 }
 
 fn add_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
@@ -280,6 +286,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
 
     #[inline]
     fn add(self, other: &Array) -> Array {
+        // TODO broadcasting, checking for valid dimensions
         let backward_op = Arc::new(|_: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&x.dimensions),
             Arc::clone(&x.values)), None); 2]);
         Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))), Some(backward_op))
@@ -292,6 +299,7 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Array {
+        // TODO broadcasting, checking for valid dimensions
         let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions),
             Arc::new(mul_values(&c[1].values, &x.values))), None), Arrays::new((Arc::clone(&c[1].dimensions),
             Arc::new(mul_values(&c[0].values, &x.values))), None)]);
@@ -302,12 +310,49 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
 impl<'a, 'b> Array {
     fn matmul(a: &Array, b: &Array) -> Array {
+        // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
-        arr![0.0]
+        let mut indices = vec![0; a.dimensions.len() - 2];
+
+        let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
+            .chain(vec![a.dimensions[indices.len()], b.dimensions[indices.len() + 1]]).collect();
+        // let c = Arrays::new((output_dimensions), None);
+        let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
+        let mut output_values = vec![0.0; output_length];
+
+        let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
+        for i in 0..product {
+            // rows of a
+            for r in 0..a.dimensions[indices.len()] {
+                // columns of b
+                for j in 0..b.dimensions[indices.len() + 1] {
+                    let mut sum = 0.0;
+                    // columns of a
+                    for k in 0..a.dimensions[indices.len() + 1] {
+                        sum += a[indices.iter().copied().chain(vec![r, k]).collect()] * b[indices.iter().copied().chain(vec![k, j]).collect()];
+                    }
+                    let flattened = flatten_indices(indices.iter().copied().chain(vec![r, j]).collect(), &output_dimensions);
+                    output_values[flattened] = sum;
+                }
+            }
+
+            for j in 0..indices.len() {
+                let current = indices.len() - j - 1;
+                if indices[current] == a.dimensions[current] - 1 {
+                    indices[current] = 0;
+                } else {
+                    indices[current] += 1;
+                    break;
+                }
+            }
+        }
+
+        Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)), None)
     }
 }
 
 // TODO test with array modification before backward call (poisoned).
+// TODO test f32
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,7 +370,14 @@ mod tests {
         ]];
         
         assert_eq!(*matrix.dimensions, vec![3, 2, 1]);
-        assert_eq!(*matrix.values, (0..=5).map(|x| x as Float).collect::<Vec<Float>>());
+        assert_eq!(*matrix.values, (0..6).map(|x| x as Float).collect::<Vec<Float>>());
+    }
+
+    #[test]
+    fn test_zeros() {
+        let matrix = Arrays::new(vec![3, 2, 3], None);
+        assert_eq!(*matrix.dimensions, vec![3, 2, 3]);
+        assert_eq!(*matrix.values, (0..18).map(|x| 0 as Float).collect::<Vec<Float>>());
     }
 
     #[test]
@@ -426,9 +478,14 @@ mod tests {
             arr![2.0, 6.0],
             arr![1.0, 2.0]
         ];
+        
+        let matmul_expect = arr![
+            arr![12.0, 21.0],
+            arr![36.0, 54.0]
+        ];
 
-        // TODO implement test
         let result = Array::matmul(&a, &b);
+        assert_eq!(result, matmul_expect);
     }
 
     #[test]
@@ -482,11 +539,32 @@ mod tests {
                 ]
             ]
         ];
-    }
 
-    #[test]
-    fn test_matmul_mult() {
-        // TODO implement test
+        let matmul_expect = arr![
+            arr![
+                arr![
+                    arr![12.0, 21.0],
+                    arr![36.0, 54.0]
+                ],
+                arr![
+                    arr![32.0, 77.0],
+                    arr![14.0, 32.0]
+                ]
+            ],
+            arr![
+                arr![
+                    arr![117.0, 124.0],
+                    arr![78.0, 84.0]
+                ],
+                arr![
+                    arr![115.0, 113.0],
+                    arr![38.0, 31.0]
+                ]
+            ]
+        ];
+
+        let result = Array::matmul(&a, &b);
+        assert_eq!(result, matmul_expect);
     }
 
     #[test]
