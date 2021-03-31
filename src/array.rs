@@ -126,6 +126,65 @@ impl Array {
         self
     }
 
+    fn matmul_flat(values: &mut Vec<Float>, offset: usize, output_offset: usize, a: &Array, b: &Array,
+                   a_transpose: bool, b_transpose: bool) {
+        let output_rows = a.dimensions[a.dimensions.len() - 2];
+        let output_columns = b.dimensions[b.dimensions.len() - 1];
+        let sum_columns = a.dimensions[a.dimensions.len() - 1];
+
+        for r in 0..output_rows {
+            for j in 0..output_columns {
+                let mut sum = 0.0;
+                
+                for k in 0..sum_columns {
+                    sum += a[offset + r * sum_columns + k] * b[offset + k * output_columns + j];
+                }
+
+                values[output_offset + r * output_columns + j] = sum;
+            }
+        }
+    }
+
+    fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
+        // TODO broadcasting
+        // TODO use BLAS, and take slice of floats instead
+        // TODO implement transpose
+        let mut indices = vec![0; a.dimensions.len() - 2];
+
+        let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
+            .chain(vec![a.dimensions[indices.len()], b.dimensions[indices.len() + 1]]).collect();
+        // let c = Arrays::new((output_dimensions), None);
+        let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
+        let mut output_values = vec![0.0; output_length];
+
+        let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
+        for _ in 0..product {
+            Array::matmul_flat(&mut output_values, flatten_indices(indices.iter().copied().chain(vec![0; 2]).collect(),
+                &a.dimensions), flatten_indices(indices.iter().copied().chain(vec![0; 2]).collect(), &output_dimensions),
+                a, b, false, false);
+
+            for j in 0..indices.len() {
+                let current = indices.len() - j - 1;
+                if indices[current] == a.dimensions[current] - 1 {
+                    indices[current] = 0;
+                } else {
+                    indices[current] += 1;
+                    break;
+                }
+            }
+        }
+
+        let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| {
+            vec![Array::matmul_values(x, &c[1], false, true, false), Array::matmul_values(&c[0], x, true, false, false)]
+        });
+
+        Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)), None)
+    }
+
+    fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
+        Array::matmul_values(a, b, a_transpose, b_transpose, true)
+    }
+
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
@@ -250,6 +309,18 @@ impl fmt::Debug for Array {
     }
 }
 
+impl Index<usize> for Array {
+    type Output = Float;
+ 
+    fn index(&self, index: usize) -> &Self::Output {
+        if index >= self.values.len() {
+            panic!("error: invalid index supplied");
+        }
+
+        &self.values[index]
+    }
+}
+
 impl Index<Vec<usize>> for Array {
     type Output = Float;
  
@@ -308,51 +379,11 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     }
 }
 
-impl<'a, 'b> Array {
-    fn matmul(a: &Array, b: &Array) -> Array {
-        // TODO broadcasting
-        // TODO use BLAS, and take slice of floats instead
-        let mut indices = vec![0; a.dimensions.len() - 2];
-
-        let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
-            .chain(vec![a.dimensions[indices.len()], b.dimensions[indices.len() + 1]]).collect();
-        // let c = Arrays::new((output_dimensions), None);
-        let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
-        let mut output_values = vec![0.0; output_length];
-
-        let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
-        for i in 0..product {
-            // rows of a
-            for r in 0..a.dimensions[indices.len()] {
-                // columns of b
-                for j in 0..b.dimensions[indices.len() + 1] {
-                    let mut sum = 0.0;
-                    // columns of a
-                    for k in 0..a.dimensions[indices.len() + 1] {
-                        sum += a[indices.iter().copied().chain(vec![r, k]).collect()] * b[indices.iter().copied().chain(vec![k, j]).collect()];
-                    }
-                    let flattened = flatten_indices(indices.iter().copied().chain(vec![r, j]).collect(), &output_dimensions);
-                    output_values[flattened] = sum;
-                }
-            }
-
-            for j in 0..indices.len() {
-                let current = indices.len() - j - 1;
-                if indices[current] == a.dimensions[current] - 1 {
-                    indices[current] = 0;
-                } else {
-                    indices[current] += 1;
-                    break;
-                }
-            }
-        }
-
-        Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)), None)
-    }
-}
-
-// TODO test with array modification before backward call (poisoned).
+// TODO test with array modification before backward call (poisoned)
 // TODO test f32
+// TODO test with multiple calls to backward
+// TODO implement higher-order derivatives
+// TODO test with higher-order derivatives
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,7 +408,7 @@ mod tests {
     fn test_zeros() {
         let matrix = Arrays::new(vec![3, 2, 3], None);
         assert_eq!(*matrix.dimensions, vec![3, 2, 3]);
-        assert_eq!(*matrix.values, (0..18).map(|x| 0 as Float).collect::<Vec<Float>>());
+        assert_eq!(*matrix.values, (0..18).map(|_| 0 as Float).collect::<Vec<Float>>());
     }
 
     #[test]
@@ -484,7 +515,7 @@ mod tests {
             arr![36.0, 54.0]
         ];
 
-        let result = Array::matmul(&a, &b);
+        let result = Array::matmul(&a, &b, false, false);
         assert_eq!(result, matmul_expect);
     }
 
@@ -563,7 +594,7 @@ mod tests {
             ]
         ];
 
-        let result = Array::matmul(&a, &b);
+        let result = Array::matmul(&a, &b, false, false);
         assert_eq!(result, matmul_expect);
     }
 
@@ -593,6 +624,36 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_matmul() {
+        let a = arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0]
+        ];
+
+        let b = arr![
+            arr![5.0, 3.0],
+            arr![2.0, 6.0],
+            arr![1.0, 2.0]
+        ];
+        
+        let matmul_expect = arr![
+            arr![12.0, 21.0],
+            arr![36.0, 54.0]
+        ];
+
+        let mut result = Array::matmul(&a, &b, false, false);
+        result.backward(None);
+        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+    }
+
+    #[test]
+    fn test_backward_repeat() {
+        // TODO implement test
+    }
+
+    #[test]
     fn test_backward_single() {
         let a = arr![5.0];
         let b = arr![2.0];
@@ -610,7 +671,7 @@ mod tests {
         let b = arr![2.0];
         let mut c = arr![0.0];
 
-        for i in 0..10 {
+        for _ in 0..10 {
             c = &c + &(&a * &b);
             if c.values[0] > 50.0 {
                 c = &c * &a;
@@ -622,6 +683,18 @@ mod tests {
         assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![1.0]);
         assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![97650.0]);
         assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![232420.0]);
+    }
+
+    #[test]
+    fn test_backward_dimensions() {
+        let a = arr![arr![5.0, 2.0], arr![3.0, 1.0]];
+        let b = arr![arr![6.0, 3.0], arr![7.0, 8.0]];
+        let mut c = &a * &b;
+        c.backward(None);
+
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 2.0], arr![3.0, 1.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![6.0, 3.0], arr![7.0, 8.0]]);
     }
 
     #[test]
