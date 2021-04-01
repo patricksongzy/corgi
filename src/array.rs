@@ -16,13 +16,13 @@ use std::thread;
 /// Helper trait to construct `Array` structs.
 pub trait Arrays {
     /// Constructs a new `Array`.
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array;
+    fn new(self) -> Array;
 }
 
 /// Implementation to construct `Array` structs by flattening other contained `Array` structs.
 impl Arrays for Vec<Array> {
     /// Constructs a new `Array`, by flattening the contained `Array` structs, and keeping their dimensions.
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self) -> Array {
         // check if any of the contained array dimensions mismatch
         let is_dimensions_valid = match self.split_first() {
             Some((first, elements)) => elements.iter().all(|item| *item.dimensions == *first.dimensions),
@@ -40,35 +40,36 @@ impl Arrays for Vec<Array> {
         let values = self.into_iter().map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten().collect::<Vec<Float>>();
 
-        Arrays::new((Arc::new(dimensions), Arc::new(values)), backward_op)
+        Arrays::new((Arc::new(dimensions), Arc::new(values)))
     }
 }
 
 /// Implementation to construct `Array` structs directly from a `Vec<Float>`.
 impl Arrays for Vec<Float> {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
-        Arrays::new((Arc::new(vec![self.len()]), Arc::new(self)), backward_op)
+    fn new(self) -> Array {
+        Arrays::new((Arc::new(vec![self.len()]), Arc::new(self)))
     }
 }
 
+// TODO more ergonomic Array creation
 impl Arrays for Vec<usize> {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self) -> Array {
         let product = self.iter().fold(1, |acc, x| acc * x);
-        Arrays::new((Arc::new(self), Arc::new(vec![0.0; product])), backward_op)
+        Arrays::new((Arc::new(self), Arc::new(vec![0.0; product])))
     }
 }
 
 /// Implementation to construct `Array` structs by using `Arc<Vec<usize>>` as the dimensions, and `Arc<Vec<Float>>`
 /// as the values.
 impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
-    fn new(self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn new(self) -> Array {
         let (dimensions, values) = self;
         Array {
             dimensions,
             values: values,
             children: Arc::new(Mutex::new(Vec::new())),
             consumer_count: Arc::new(Mutex::new(0)),
-            backward_op,
+            backward_op: None,
             tx: Arc::new(Mutex::new(None)),
             gradient: Arc::new(Mutex::new(None))
         }
@@ -114,35 +115,46 @@ macro_rules! arr {
                 values.push($x);
             )*
  
-            Arrays::new(values, None)
+            Arrays::new(values)
         }
     };
 }
 
 impl Array {
+    pub fn gradient(&self) -> Array {
+        self.gradient.lock().unwrap().clone().unwrap().clone()
+    }
+
     /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
         self
     }
 
-    fn matmul_flat(values: &mut Vec<Float>, offset: usize, output_offset: usize, a: &Array, b: &Array,
-                   a_transpose: bool, b_transpose: bool) {
+    fn with_backward_op(mut self, backward_op: Option<Arc<dyn Fn(&Vec<Array>, &Array) -> Vec<Array> + Send + Sync>>) -> Array {
+        self.backward_op = backward_op;
+        self
+    }
+
+    fn matmul_flat(values: &mut Vec<Float>, output_dimensions: &Vec<usize>, offset: usize, output_offset: usize,
+                   a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
         // TODO dimension checking
         // TODO implement transpose
-        // TODO make transpose checking more elegant
-        let output_rows = a.dimensions[a.dimensions.len() - if a_transpose { 1 } else { 2 }];
-        let output_columns = b.dimensions[b.dimensions.len() - if b_transpose { 2 } else { 1 }];
-        let sum_columns = a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }];
+        let output_rows = output_dimensions[output_dimensions.len() - 2];
+        let output_columns = output_dimensions[output_dimensions.len() - 1];
+        let sum_columns = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
+            - if a_transpose { 2 } else { 1 }] };
 
-        println!("{} {:?}", a_transpose, a.dimensions);
-        println!("{} {} {}", output_rows, output_columns, sum_columns);
+//         println!("{} {} {}", output_rows, output_columns, sum_columns);
 
         for r in 0..output_rows {
             for j in 0..output_columns {
                 let mut sum = 0.0;
                 
                 for k in 0..sum_columns {
+                    // println!("{}, {}", offset + if a_transpose { k * output_rows + r } else { r * sum_columns + k },
+                    //          offset + if b_transpose { j * sum_columns + k } else { k * output_columns + j });
+                    // TODO cleanup
                     sum += a[offset + if a_transpose { k * output_rows + r } else { r * sum_columns + k }]
                         * b[offset + if b_transpose { j * sum_columns + k } else { k * output_columns + j }];
                 }
@@ -155,21 +167,25 @@ impl Array {
     fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
-        let mut indices = vec![0; a.dimensions.len() - 2];
+        let mut indices = vec![0; a.dimensions.len().checked_sub(2).unwrap_or(0)];
+
+        // TODO cleanup
+        let output_rows = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
+            - if a_transpose { 1 } else { 2 }] };
+        let output_columns = if b.dimensions.len() < 2 { 1 } else { b.dimensions[b.dimensions.len()
+            - if b_transpose { 2 } else { 1 }] };
 
         let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
-            .chain(vec![a.dimensions[a.dimensions.len() - if a_transpose { 1 } else { 2 }],
-            b.dimensions[b.dimensions.len() - if b_transpose { 2 } else { 1 }]]).collect();
-        println!("{:?}", output_dimensions);
+            .chain(vec![output_rows, output_columns]).collect();
 
         let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
         let mut output_values = vec![0.0; output_length];
 
         let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
         for _ in 0..product {
-            Array::matmul_flat(&mut output_values, flatten_indices(indices.iter().copied().chain(vec![0; 2]).collect(),
-                &a.dimensions), flatten_indices(indices.iter().copied().chain(vec![0; 2]).collect(), &output_dimensions),
-                a, b, a_transpose, b_transpose);
+            Array::matmul_flat(&mut output_values, &output_dimensions, flatten_indices_unchecked(indices.iter().copied()
+                .chain(vec![0; 2]).collect(), &a.dimensions), flatten_indices_unchecked(indices.iter().copied()
+                .chain(vec![0; 2]).collect(), &output_dimensions), a, b, a_transpose, b_transpose);
 
             for j in 0..indices.len() {
                 let current = indices.len() - j - 1;
@@ -198,12 +214,12 @@ impl Array {
             vec![delta_a, delta_b]
         });
 
-        let result = Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)), if has_backward { Some(backward_op) } else { None });
+        let result = Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)));
 
-        if has_backward { result.with_children(vec![a.clone(), b.clone()]) } else { result }
+        if has_backward { result.with_children(vec![a.clone(), b.clone()]).with_backward_op(Some(backward_op)) } else { result }
     }
 
-    fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
+    pub fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
         Array::matmul_values(a, b, a_transpose, b_transpose, true)
     }
 
@@ -241,7 +257,7 @@ impl Array {
 
         mem::drop(consumer_count);
 
-        let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)), None);
+        let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
         self.backward(Some(delta));
     }
 
@@ -255,7 +271,7 @@ impl Array {
             Some(x) => x,
             None => {
                 self.propagate_consumers();
-                Arrays::new((Arc::clone(&self.dimensions), Arc::new(vec![1.0; self.values.len()])), None)
+                Arrays::new((Arc::clone(&self.dimensions), Arc::new(vec![1.0; self.values.len()])))
             },
         };
 
@@ -347,18 +363,19 @@ impl Index<Vec<usize>> for Array {
     type Output = Float;
  
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
-        &self.values[flatten_indices(indices, &*self.dimensions)]
+        let is_indices_valid = indices.len() == self.dimensions.len()
+            && !indices.iter().zip(&*self.dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
+
+        if !is_indices_valid {
+            panic!("error: invalid indices supplied")
+        } 
+
+        &self.values[flatten_indices_unchecked(indices, &*self.dimensions)]
     }
 }
 
-fn flatten_indices(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
-    let is_indices_valid = indices.len() == dimensions.len()
-        && !indices.iter().zip(&*dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
-
-    if !is_indices_valid {
-        panic!("error: invalid indices supplied")
-    } 
-
+// TODO make checked (currently messes up matmul with vectors)
+fn flatten_indices_unchecked(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
     let mut iter = indices.iter();
     let first = iter.next().unwrap();
 
@@ -381,9 +398,9 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     fn add(self, other: &Array) -> Array {
         // TODO broadcasting, checking for valid dimensions
         let backward_op = Arc::new(|_: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&x.dimensions),
-            Arc::clone(&x.values)), None); 2]);
-        Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))), Some(backward_op))
-            .with_children(vec![self.clone(), other.clone()])
+            Arc::clone(&x.values))); 2]);
+        Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values))))
+            .with_children(vec![self.clone(), other.clone()]).with_backward_op(Some(backward_op))
     }
 }
 
@@ -394,10 +411,10 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     fn mul(self, other: &Array) -> Array {
         // TODO broadcasting, checking for valid dimensions
         let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions),
-            Arc::new(mul_values(&c[1].values, &x.values))), None), Arrays::new((Arc::clone(&c[1].dimensions),
-            Arc::new(mul_values(&c[0].values, &x.values))), None)]);
-        Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))), Some(backward_op))
-            .with_children(vec![self.clone(), other.clone()])
+            Arc::new(mul_values(&c[1].values, &x.values)))), Arrays::new((Arc::clone(&c[1].dimensions),
+            Arc::new(mul_values(&c[0].values, &x.values))))]);
+        Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))))
+            .with_children(vec![self.clone(), other.clone()]).with_backward_op(Some(backward_op))
     }
 }
 
@@ -429,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_zeros() {
-        let matrix = Arrays::new(vec![3, 2, 3], None);
+        let matrix = Arrays::new(vec![3, 2, 3]);
         assert_eq!(*matrix.dimensions, vec![3, 2, 3]);
         assert_eq!(*matrix.values, (0..18).map(|_| 0 as Float).collect::<Vec<Float>>());
     }
@@ -563,6 +580,18 @@ mod tests {
 
         let result = Array::matmul(&a, &b, true, false);
         assert_eq!(result, matmul_expect);
+    }
+
+    #[test]
+    fn test_matmul_vec() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+        let b = arr![1.0, 2.0, 3.0];
+
+        let result = Array::matmul(&a, &b, false, true);
+        assert_eq!(result, arr![arr![14.0], arr![32.0]]);
+
+        let result = Array::matmul(&b, &a, false, true);
+        assert_eq!(result, arr![14.0, 32.0]);
     }
 
     #[test]
@@ -717,7 +746,25 @@ mod tests {
         assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
         assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 7.0, 9.0], arr![5.0, 7.0, 9.0]]);
         assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
+    }
 
+    #[test]
+    fn test_backward_matmul_vec() {
+        let a = arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0]
+        ];
+
+        let b = arr![arr![1.0], arr![2.0], arr![3.0]];
+
+        let c = arr![arr![7.0], arr![8.0]];
+
+        let mut result = &Array::matmul(&a, &b, false, false) + &c;
+        result.backward(None);
+        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0], arr![1.0]]);
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0], arr![1.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0], arr![7.0], arr![9.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
     }
 
     #[test]
@@ -738,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backawrd_control_flow() {
+    fn test_backward_control_flow() {
         let a = arr![5.0];
         let b = arr![2.0];
         let mut c = arr![0.0];
