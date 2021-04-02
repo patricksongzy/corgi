@@ -37,7 +37,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let input_size = 128;
         let hidden_size = 256;
-        let output_size = 16;;
+        let output_size = 16;
         let l1 = Dense::new(input_size, hidden_size);
         let l2 = Dense::new(hidden_size, output_size);
         let r1 = l1.forward(Arrays::new((Arc::new(vec![input_size, 1]), Arc::new((0..input_size)
