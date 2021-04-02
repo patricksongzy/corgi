@@ -1,5 +1,7 @@
 use crate::numbers::*;
 
+use std::cmp;
+
 use std::ops;
 use std::ops::Index;
 
@@ -136,30 +138,21 @@ impl Array {
         self
     }
 
-    fn matmul_flat(values: &mut Vec<Float>, output_dimensions: &Vec<usize>, offset: usize, output_offset: usize,
-                   a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
+    fn matmul_flat(values: &mut Vec<Float>, output_rows: usize, output_cols: usize, sum_len: usize, offset: usize,
+                   output_offset: usize, a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
         // TODO dimension checking
         // TODO implement transpose
-        let output_rows = output_dimensions[output_dimensions.len() - 2];
-        let output_columns = output_dimensions[output_dimensions.len() - 1];
-        let sum_columns = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
-            - if a_transpose { 2 } else { 1 }] };
-
-//         println!("{} {} {}", output_rows, output_columns, sum_columns);
-
         for r in 0..output_rows {
-            for j in 0..output_columns {
+            for j in 0..output_cols {
                 let mut sum = 0.0;
-                
-                for k in 0..sum_columns {
-                    // println!("{}, {}", offset + if a_transpose { k * output_rows + r } else { r * sum_columns + k },
-                    //          offset + if b_transpose { j * sum_columns + k } else { k * output_columns + j });
+
+                for k in 0..sum_len {
                     // TODO cleanup
-                    sum += a[offset + if a_transpose { k * output_rows + r } else { r * sum_columns + k }]
-                        * b[offset + if b_transpose { j * sum_columns + k } else { k * output_columns + j }];
+                    sum += a[offset + if a_transpose { k * output_rows + r } else { r * sum_len + k }]
+                        * b[offset + if b_transpose { j * sum_len + k } else { k * output_cols + j }];
                 }
 
-                values[output_offset + r * output_columns + j] = sum;
+                values[output_offset + r * output_cols + j] = sum;
             }
         }
     }
@@ -167,25 +160,33 @@ impl Array {
     fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
-        let mut indices = vec![0; a.dimensions.len().checked_sub(2).unwrap_or(0)];
+        let mut indices = vec![0; cmp::min(a.dimensions.len(), b.dimensions.len()).checked_sub(2).unwrap_or(0)];
+
+        // TODO fix
+        // if a.dimensions.len() != b.dimensions.len() {
+        //     panic!("error: the dimensions {:?}, and {:?} are not compatible", a.dimensions, b.dimensions);
+        // }
 
         // TODO cleanup
         let output_rows = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
             - if a_transpose { 1 } else { 2 }] };
-        let output_columns = if b.dimensions.len() < 2 { 1 } else { b.dimensions[b.dimensions.len()
+        let output_cols = if b.dimensions.len() < 2 { 1 } else { b.dimensions[b.dimensions.len()
             - if b_transpose { 2 } else { 1 }] };
+        let sum_len = if a.dimensions.len() < 2 && a_transpose { 1 }
+            else { a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }]};
 
         let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
-            .chain(vec![output_rows, output_columns]).collect();
+            .chain(if output_rows == 1 { vec![output_cols] } else { vec![output_rows, output_cols] }).collect();
 
         let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
         let mut output_values = vec![0.0; output_length];
 
         let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
         for _ in 0..product {
-            Array::matmul_flat(&mut output_values, &output_dimensions, flatten_indices_unchecked(indices.iter().copied()
-                .chain(vec![0; 2]).collect(), &a.dimensions), flatten_indices_unchecked(indices.iter().copied()
-                .chain(vec![0; 2]).collect(), &output_dimensions), a, b, a_transpose, b_transpose);
+            Array::matmul_flat(&mut output_values, output_rows, output_cols, sum_len,
+                flatten_indices_unchecked(indices.iter().copied().chain(vec![0; 2]).collect(), &a.dimensions),
+                flatten_indices_unchecked(indices.iter().copied().chain(vec![0; 2]).collect(), &output_dimensions),
+                a, b, a_transpose, b_transpose);
 
             for j in 0..indices.len() {
                 let current = indices.len() - j - 1;
@@ -555,8 +556,13 @@ mod tests {
             arr![36.0, 54.0]
         ];
 
-        let result = Array::matmul(&a, &b, false, false);
+        let mut result = Array::matmul(&a, &b, false, false);
         assert_eq!(result, matmul_expect);
+
+        result.backward(None);
+        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
     }
 
     #[test]
@@ -578,20 +584,52 @@ mod tests {
             arr![36.0, 54.0]
         ];
 
-        let result = Array::matmul(&a, &b, true, false);
+        let mut result = Array::matmul(&a, &b, true, false);
         assert_eq!(result, matmul_expect);
+
+        result.backward(None);
+        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
     }
 
     #[test]
     fn test_matmul_vec() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
-        let b = arr![1.0, 2.0, 3.0];
+        let b = arr![arr![1.0, 2.0, 3.0]];
+        let c = arr![arr![1.0], arr![2.0], arr![3.0]]; 
 
         let result = Array::matmul(&a, &b, false, true);
         assert_eq!(result, arr![arr![14.0], arr![32.0]]);
 
         let result = Array::matmul(&b, &a, false, true);
         assert_eq!(result, arr![14.0, 32.0]);
+
+        let result = Array::matmul(&b, &c, false, false);
+        assert_eq!(result, arr![14.0]);
+    }
+
+    #[test]
+    fn test_matmul_single() {
+        let a = arr![1.0, 2.0, 3.0];
+        let b = arr![3.0, 2.0, 1.0];
+        let result = Array::matmul(&a, &b, false, false);
+        assert_eq!(result, arr![10.0]);
+    }
+
+    #[test]
+    fn test_matmul_multi() {
+        let a = arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0]
+        ];
+        
+        let b = arr![arr![1.0], arr![2.0], arr![3.0]];
+        
+        let c = arr![arr![1.0, 2.0, 3.0]];
+
+        let result = Array::matmul(&Array::matmul(&a, &b, false, false), &c, false, false);
+        assert_eq!(result, arr![arr![14.0, 28.0, 42.0], arr![32.0, 64.0, 96.0]]);
     }
 
     #[test]
@@ -699,57 +737,16 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_matmul() {
-        let a = arr![
-            arr![1.0, 2.0, 3.0],
-            arr![4.0, 5.0, 6.0]
-        ];
-
-        let b = arr![
-            arr![5.0, 3.0],
-            arr![2.0, 6.0],
-            arr![1.0, 2.0]
-        ];
-        
-        let matmul_expect = arr![
-            arr![12.0, 21.0],
-            arr![36.0, 54.0]
-        ];
-
-        let mut result = Array::matmul(&a, &b, false, false);
-        result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
-    }
-
-    #[test]
-    fn test_backward_matmul_transpose() {
-        let a = arr![
-            arr![1.0, 4.0],
-            arr![2.0, 5.0],
-            arr![3.0, 6.0]
-        ];
-
-        let b = arr![
-            arr![5.0, 2.0, 1.0],
-            arr![3.0, 6.0, 2.0]
-        ];
-        
-        let matmul_expect = arr![
-            arr![12.0, 21.0],
-            arr![36.0, 54.0]
-        ];
-
-        let mut result = Array::matmul(&a, &b, true, true);
-        result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 7.0, 9.0], arr![5.0, 7.0, 9.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
-    }
-
-    #[test]
     fn test_backward_matmul_vec() {
+        let a = arr![arr![1.0, 2.0, 3.0]];
+        let b = arr![arr![9.0, 8.0, 7.0]];
+        
+        let mut result = Array::matmul(&a, &b, false, true);
+        result.backward(None);
+    }
+
+    #[test]
+    fn test_backward_matmul_vec_multi() {
         let a = arr![
             arr![1.0, 2.0, 3.0],
             arr![4.0, 5.0, 6.0]
@@ -765,6 +762,25 @@ mod tests {
         assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0], arr![1.0]]);
         assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0], arr![7.0], arr![9.0]]);
         assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+    }
+
+    #[test]
+    fn test_backward_matmul_multi() {
+        let a = arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0]
+        ];
+        
+        let b = arr![arr![1.0], arr![2.0], arr![3.0]];
+        
+        let c = arr![arr![1.0, 2.0, 3.0]];
+
+        let mut result = Array::matmul(&Array::matmul(&a, &b, false, false), &c, false, false);
+        result.backward(None);
+        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
+        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![46.0, 46.0, 46.0]]);
+        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![30.0], arr![42.0], arr![54.0]]);
+        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]);
     }
 
     #[test]
