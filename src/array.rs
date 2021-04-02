@@ -160,12 +160,11 @@ impl Array {
     fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
-        let mut indices = vec![0; cmp::min(a.dimensions.len(), b.dimensions.len()).checked_sub(2).unwrap_or(0)];
+        if a.dimensions.len() != b.dimensions.len() {
+            panic!("error: the dimensions {:?}, and {:?} are not compatible", a.dimensions, b.dimensions);
+        }
 
-        // TODO fix
-        // if a.dimensions.len() != b.dimensions.len() {
-        //     panic!("error: the dimensions {:?}, and {:?} are not compatible", a.dimensions, b.dimensions);
-        // }
+        let mut indices = vec![0; a.dimensions.len().checked_sub(2).unwrap_or(0)];
 
         // TODO cleanup
         let output_rows = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
@@ -176,7 +175,7 @@ impl Array {
             else { a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }]};
 
         let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
-            .chain(if output_rows == 1 { vec![output_cols] } else { vec![output_rows, output_cols] }).collect();
+            .chain(if a.dimensions.len() < 2 { vec![output_cols] } else { vec![output_rows, output_cols] }).collect();
 
         let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
         let mut output_values = vec![0.0; output_length];
@@ -603,10 +602,10 @@ mod tests {
         assert_eq!(result, arr![arr![14.0], arr![32.0]]);
 
         let result = Array::matmul(&b, &a, false, true);
-        assert_eq!(result, arr![14.0, 32.0]);
+        assert_eq!(result, arr![arr![14.0, 32.0]]);
 
         let result = Array::matmul(&b, &c, false, false);
-        assert_eq!(result, arr![14.0]);
+        assert_eq!(result, arr![arr![14.0]]);
     }
 
     #[test]
