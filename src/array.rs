@@ -1,7 +1,5 @@
 use crate::numbers::*;
 
-use std::cmp;
-
 use std::ops;
 use std::ops::Index;
 
@@ -42,14 +40,14 @@ impl Arrays for Vec<Array> {
         let values = self.into_iter().map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten().collect::<Vec<Float>>();
 
-        Arrays::new((Arc::new(dimensions), Arc::new(values)))
+        Arrays::new((dimensions, values))
     }
 }
 
 /// Implementation to construct `Array` structs directly from a `Vec<Float>`.
 impl Arrays for Vec<Float> {
     fn new(self) -> Array {
-        Arrays::new((Arc::new(vec![self.len()]), Arc::new(self)))
+        Arrays::new((vec![self.len()], self))
     }
 }
 
@@ -57,7 +55,14 @@ impl Arrays for Vec<Float> {
 impl Arrays for Vec<usize> {
     fn new(self) -> Array {
         let product = self.iter().fold(1, |acc, x| acc * x);
-        Arrays::new((Arc::new(self), Arc::new(vec![0.0; product])))
+        Arrays::new((self, vec![0.0; product]))
+    }
+}
+
+impl Arrays for (Vec<usize>, Vec<Float>) {
+    fn new(self) -> Array {
+        let (dimensions, values) = self;
+        Arrays::new((Arc::new(dimensions), Arc::new(values)))
     }
 }
 
@@ -78,6 +83,7 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     }
 }
 
+// TODO add flag to not store gradient
 // TODO add poisoned flag, if Array has been modified
 /// An n-dimensional differentiable Array.
 ///
@@ -140,8 +146,6 @@ impl Array {
 
     fn matmul_flat(values: &mut Vec<Float>, output_rows: usize, output_cols: usize, sum_len: usize, offset: usize,
                    output_offset: usize, a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
-        // TODO dimension checking
-        // TODO implement transpose
         for r in 0..output_rows {
             for j in 0..output_cols {
                 let mut sum = 0.0;
@@ -166,7 +170,7 @@ impl Array {
 
         let mut indices = vec![0; a.dimensions.len().checked_sub(2).unwrap_or(0)];
 
-        // TODO cleanup
+        // TODO clean up
         let output_rows = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
             - if a_transpose { 1 } else { 2 }] };
         let output_cols = if b.dimensions.len() < 2 { 1 } else { b.dimensions[b.dimensions.len()
@@ -183,8 +187,8 @@ impl Array {
         let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
         for _ in 0..product {
             Array::matmul_flat(&mut output_values, output_rows, output_cols, sum_len,
-                flatten_indices_unchecked(indices.iter().copied().chain(vec![0; 2]).collect(), &a.dimensions),
-                flatten_indices_unchecked(indices.iter().copied().chain(vec![0; 2]).collect(), &output_dimensions),
+                flatten_indices(indices.iter().copied().chain(vec![0; a.dimensions.len() - indices.len()]).collect(), &a.dimensions),
+                flatten_indices(indices.iter().copied().chain(vec![0; output_dimensions.len() - indices.len()]).collect(), &output_dimensions),
                 a, b, a_transpose, b_transpose);
 
             for j in 0..indices.len() {
@@ -214,7 +218,7 @@ impl Array {
             vec![delta_a, delta_b]
         });
 
-        let result = Arrays::new((Arc::new(output_dimensions), Arc::new(output_values)));
+        let result = Arrays::new((output_dimensions, output_values));
 
         if has_backward { result.with_children(vec![a.clone(), b.clone()]).with_backward_op(Some(backward_op)) } else { result }
     }
@@ -255,6 +259,7 @@ impl Array {
             sum(&mut delta, &received.values);
         }
 
+        *self.tx.lock().unwrap() = None;
         mem::drop(consumer_count);
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
@@ -363,19 +368,18 @@ impl Index<Vec<usize>> for Array {
     type Output = Float;
  
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
-        let is_indices_valid = indices.len() == self.dimensions.len()
-            && !indices.iter().zip(&*self.dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
-
-        if !is_indices_valid {
-            panic!("error: invalid indices supplied")
-        } 
-
-        &self.values[flatten_indices_unchecked(indices, &*self.dimensions)]
+        &self.values[flatten_indices(indices, &*self.dimensions)]
     }
 }
 
-// TODO make checked (currently messes up matmul with vectors)
-fn flatten_indices_unchecked(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
+fn flatten_indices(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
+    let is_indices_valid = indices.len() == dimensions.len()
+        && !indices.iter().zip(dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
+
+    if !is_indices_valid {
+        panic!("error: invalid indices supplied")
+    } 
+
     let mut iter = indices.iter();
     let first = iter.next().unwrap();
 
@@ -559,9 +563,9 @@ mod tests {
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
+        assert_eq!(result.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+        assert_eq!(a.gradient(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
     }
 
     #[test]
@@ -587,9 +591,9 @@ mod tests {
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
+        assert_eq!(result.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+        assert_eq!(a.gradient(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
     }
 
     #[test]
@@ -634,76 +638,18 @@ mod tests {
     #[test]
     fn test_matmul_nd() {
         let a = arr![
-            arr![
-                arr![
-                    arr![1.0, 2.0, 3.0],
-                    arr![4.0, 5.0, 6.0]
-                ],
-                arr![
-                    arr![6.0, 5.0, 4.0],
-                    arr![3.0, 2.0, 1.0]
-                ]
-            ],
-            arr![
-                arr![
-                    arr![9.0, 8.0, 7.0],
-                    arr![4.0, 5.0, 6.0]
-                ],
-                arr![
-                    arr![6.0, 7.0, 8.0],
-                    arr![3.0, 2.0, 1.0]
-                ]
-            ]
+            arr![arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]], arr![arr![6.0, 5.0, 4.0], arr![3.0, 2.0, 1.0]]],
+            arr![arr![arr![9.0, 8.0, 7.0], arr![4.0, 5.0, 6.0]], arr![arr![6.0, 7.0, 8.0], arr![3.0, 2.0, 1.0]]]
         ];
 
         let b = arr![
-            arr![
-                arr![
-                    arr![5.0, 3.0],
-                    arr![2.0, 6.0],
-                    arr![1.0, 2.0]
-                ],
-                arr![
-                    arr![3.0, 6.0],
-                    arr![2.0, 5.0],
-                    arr![1.0, 4.0]
-                ]
-            ],
-            arr![
-                arr![
-                    arr![5.0, 3.0],
-                    arr![2.0, 6.0],
-                    arr![8.0, 7.0]
-                ],
-                arr![
-                    arr![8.0, 6.0],
-                    arr![5.0, 3.0],
-                    arr![4.0, 7.0]
-                ]
-            ]
+            arr![arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]], arr![arr![3.0, 6.0], arr![2.0, 5.0], arr![1.0, 4.0]]],
+            arr![arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![8.0, 7.0]], arr![arr![8.0, 6.0], arr![5.0, 3.0], arr![4.0, 7.0]]]
         ];
 
         let matmul_expect = arr![
-            arr![
-                arr![
-                    arr![12.0, 21.0],
-                    arr![36.0, 54.0]
-                ],
-                arr![
-                    arr![32.0, 77.0],
-                    arr![14.0, 32.0]
-                ]
-            ],
-            arr![
-                arr![
-                    arr![117.0, 124.0],
-                    arr![78.0, 84.0]
-                ],
-                arr![
-                    arr![115.0, 113.0],
-                    arr![38.0, 31.0]
-                ]
-            ]
+            arr![arr![arr![12.0, 21.0], arr![36.0, 54.0]], arr![arr![32.0, 77.0], arr![14.0, 32.0]]],
+            arr![arr![arr![117.0, 124.0], arr![78.0, 84.0]], arr![arr![115.0, 113.0],arr![38.0, 31.0]]]
         ];
 
         let result = Array::matmul(&a, &b, false, false);
@@ -757,10 +703,10 @@ mod tests {
 
         let mut result = &Array::matmul(&a, &b, false, false) + &c;
         result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0], arr![1.0]]);
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0], arr![1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0], arr![7.0], arr![9.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+        assert_eq!(result.gradient(), arr![arr![1.0], arr![1.0]]);
+        assert_eq!(c.gradient(), arr![arr![1.0], arr![1.0]]);
+        assert_eq!(b.gradient(), arr![arr![5.0], arr![7.0], arr![9.0]]);
+        assert_eq!(a.gradient(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
     }
 
     #[test]
@@ -776,15 +722,20 @@ mod tests {
 
         let mut result = Array::matmul(&Array::matmul(&a, &b, false, false), &c, false, false);
         result.backward(None);
-        assert_eq!(result.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![46.0, 46.0, 46.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![30.0], arr![42.0], arr![54.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]);
+        assert_eq!(result.gradient(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
+        assert_eq!(c.gradient(), arr![arr![46.0, 46.0, 46.0]]);
+        assert_eq!(b.gradient(), arr![arr![30.0], arr![42.0], arr![54.0]]);
+        assert_eq!(a.gradient(), arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]);
     }
 
     #[test]
     fn test_backward_repeat() {
+        let a = arr![arr![1.0, 2.0, 3.0]];
         // TODO implement test
+        for _ in 0..5 {
+            let mut b = &a * &a;
+            b.backward(None);
+        }
     }
 
     #[test]
@@ -814,9 +765,9 @@ mod tests {
 
         c.backward(None);
         assert_eq!(c, arr![195300.0]);
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![1.0]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![97650.0]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![232420.0]);
+        assert_eq!(c.gradient(), arr![1.0]);
+        assert_eq!(b.gradient(), arr![97650.0]);
+        assert_eq!(a.gradient(), arr![232420.0]);
     }
 
     #[test]
@@ -826,9 +777,9 @@ mod tests {
         let mut c = &a * &b;
         c.backward(None);
 
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![arr![5.0, 2.0], arr![3.0, 1.0]]);
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![arr![6.0, 3.0], arr![7.0, 8.0]]);
+        assert_eq!(c.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(b.gradient(), arr![arr![5.0, 2.0], arr![3.0, 1.0]]);
+        assert_eq!(a.gradient(), arr![arr![6.0, 3.0], arr![7.0, 8.0]]);
     }
 
     #[test]
@@ -840,11 +791,11 @@ mod tests {
         let mut e = &a * &d;
         e.backward(None);
 
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![70.0, 16.0]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![25.0, 4.0]);
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![5.0, 2.0]);
-        assert_eq!(d.gradient.lock().unwrap().clone().unwrap(), arr![5.0, 2.0]);
-        assert_eq!(e.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(e.gradient(), arr![1.0, 1.0]);
+        assert_eq!(d.gradient(), arr![5.0, 2.0]);
+        assert_eq!(c.gradient(), arr![5.0, 2.0]);
+        assert_eq!(b.gradient(), arr![25.0, 4.0]);
+        assert_eq!(a.gradient(), arr![70.0, 16.0]);
     }
     
     #[test]
@@ -855,10 +806,23 @@ mod tests {
         let mut product = &c * &a;
         product.backward(None);
 
-        assert_eq!(a.gradient.lock().unwrap().clone().unwrap(), arr![60.0, 48.0]);
-        assert_eq!(b.gradient.lock().unwrap().clone().unwrap(), arr![11.0, 28.0]);
-        assert_eq!(c.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 2.0]);
-        assert_eq!(product.gradient.lock().unwrap().clone().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(product.gradient(), arr![1.0, 1.0]);
+        assert_eq!(c.gradient(), arr![1.0, 2.0]);
+        assert_eq!(b.gradient(), arr![11.0, 28.0]);
+        assert_eq!(a.gradient(), arr![60.0, 48.0]);
+    }
+
+    #[test]
+    fn test_backward_reassign() {
+        let a = arr![1.0, 2.0];
+        let mut b = arr![5.0, 6.0];
+
+        b = &b + &a;
+        b = &b * &a;
+        b.backward(None);
+        
+        assert_eq!(b.gradient(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient(), arr![7.0, 10.0]);
     }
 
     #[test]
