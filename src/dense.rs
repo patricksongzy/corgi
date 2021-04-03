@@ -1,8 +1,6 @@
 use crate::numbers::*;
 use crate::array::*;
 
-use std::sync::Arc;
-
 struct Dense {
     weights: Array,
     biases: Array,
@@ -16,8 +14,8 @@ impl Dense {
         let mut rng = rand::thread_rng();
         let range = 1.0 / (input_size as Float).sqrt();
         Dense {
-            weights: Arrays::new((Arc::new(vec![output_size, input_size]), Arc::new((0..input_size * output_size)
-                .map(|_| rng.gen_range(-range..=range)).collect::<Vec<Float>>()))),
+            weights: Arrays::new((vec![output_size, input_size], (0..input_size * output_size)
+                .map(|_| rng.gen_range(-range..=range)).collect::<Vec<Float>>())),
             biases: Arrays::new(vec![0.0; output_size])
         }
     }
@@ -40,9 +38,12 @@ mod tests {
         let output_size = 16;
         let l1 = Dense::new(input_size, hidden_size);
         let l2 = Dense::new(hidden_size, output_size);
-        let r1 = l1.forward(Arrays::new((Arc::new(vec![input_size, 1]), Arc::new((0..input_size)
-            .map(|_| rng.gen_range(0.0..1.0)).collect::<Vec<Float>>()))));
-        let mut r2 = l2.forward(r1);
-        r2.backward(None);
+        for _ in 0..5 {
+            let r1 = l1.forward(Arrays::new((vec![input_size, 1], (0..input_size)
+                .map(|_| rng.gen_range(0.0..1.0)).collect::<Vec<Float>>())));
+            let mut r2 = l2.forward(r1);
+
+            r2.backward(None);
+        }
     }
 }
