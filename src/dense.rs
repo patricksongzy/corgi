@@ -33,17 +33,40 @@ mod tests {
     fn test_backward() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let input_size = 128;
-        let hidden_size = 256;
-        let output_size = 16;
-        let l1 = Dense::new(input_size, hidden_size);
-        let l2 = Dense::new(hidden_size, output_size);
-        for _ in 0..5 {
-            let r1 = l1.forward(Arrays::new((vec![input_size, 1], (0..input_size)
-                .map(|_| rng.gen_range(0.0..1.0)).collect::<Vec<Float>>())));
+        let lr = 0.01;
+        let input_size = 1;
+        let hidden_size = 8;
+        let output_size = 1;
+        let mut l1 = Dense::new(input_size, hidden_size);
+        let mut l2 = Dense::new(hidden_size, output_size);
+        for _ in 0..1000 {
+            // let input = Arrays::new((vec![input_size, 1], (0..input_size).map(|_| rng.gen_range(0.0..1.0))
+            //     .collect::<Vec<Float>>()));
+            let x = rng.gen_range(0.0..1.0);
+            let input = arr![arr![x]];
+            let r1 = l1.forward(input);
             let mut r2 = l2.forward(r1);
 
-            r2.backward(None);
+            let target = 0.5 * x + 0.5;
+            let loss = (target - r2[0]).powf(2.0);
+            let delta = 2.0 * (r2[0] - target);
+            r2.backward(Some(arr![arr![delta]]));
+            println!("in: {}, out: {}, target: {}, loss: {}", x, r2[0], target, loss);
+
+            let mut gw2 = l2.weights.gradient();
+            let mut gb2 = l2.biases.gradient();
+            let mut gw1 = l1.weights.gradient();
+            let mut gb1 = l1.biases.gradient();
+
+            l2.weights = l2.weights.untracked() + (gw2.untracked() * -lr).untracked();
+            l2.biases = l2.biases.untracked() + (gb2.untracked() * -lr).untracked();
+            l1.weights = l1.weights.untracked() + (gw1.untracked() * -lr).untracked();
+            l1.biases = l1.biases.untracked() + (gb1.untracked() * -lr).untracked();
+
+            *l2.weights.gradient_mut() = None;
+            *l2.biases.gradient_mut() = None;
+            *l1.weights.gradient_mut() = None;
+            *l1.biases.gradient_mut() = None;
         }
     }
 }
