@@ -48,7 +48,7 @@ mod tests {
             let r1 = l1.forward(input);
             let r2 = l2.forward(r1);
 
-            let mut target = x.sin();
+            let mut target = x.exp();
 
             let mut error = (&arr![target] - &r2).powf(2.0);
             let loss = error.sum();
