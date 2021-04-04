@@ -316,7 +316,9 @@ impl Array {
         let mut consumer_count = self.consumer_count.lock().unwrap();
 
         if *consumer_count == 0 {
-            panic!("error: cannot await results from end node");
+            mem::drop(consumer_count);
+            self.backward(Some(delta));
+            return;
         }
 
         let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
@@ -999,13 +1001,25 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_delta() {
+        let a = arr![5.0];
+        let b = arr![2.0];
+
+        let mut product = &a * &b;
+        product.backward(Some(arr![5.0]));
+        assert_eq!(product.gradient(), arr![5.0]);
+        assert_eq!(b.gradient(), arr![25.0]);
+        assert_eq!(a.gradient(), arr![10.0]);
+    }
+
+    #[test]
     fn test_backward_dimensions() {
         let a = arr![arr![5.0, 2.0], arr![3.0, 1.0]];
         let b = arr![arr![6.0, 3.0], arr![7.0, 8.0]];
-        let mut c = &a * &b;
-        c.backward(None);
 
-        assert_eq!(c.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        let mut product = &a * &b;
+        product.backward(None);
+        assert_eq!(product.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
         assert_eq!(b.gradient(), arr![arr![5.0, 2.0], arr![3.0, 1.0]]);
         assert_eq!(a.gradient(), arr![arr![6.0, 3.0], arr![7.0, 8.0]]);
     }
