@@ -255,6 +255,19 @@ impl Array {
         if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
     }
 
+    pub fn sigmoid(&self) -> Array {
+        let values = Arc::new(self.values.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<Float>>());
+        let cached = Arc::clone(&values);
+        let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+            let values = mul_values(&cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(), &x.values);
+            vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(values)))]
+        });
+
+        let result = Arrays::new((Arc::clone(&self.dimensions), values));
+
+        if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
+    }
+
     pub fn sum(&self) -> Float {
         self.values.iter().sum()
     }
@@ -836,6 +849,21 @@ mod tests {
         assert_eq!(c.gradient(), arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]);
         assert_eq!(b.gradient(), arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]);
         assert_eq!(a.gradient(), arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]);
+    }
+
+    #[test]
+    fn test_backward_sigmoid() {
+        let a = arr![arr![(3.0 as Float).ln()]];
+        let b = arr![arr![5.0]];
+        let c = a.sigmoid();
+
+        let mut result = &c * &b;
+        assert_eq!(result, arr![arr![3.75]]);
+        result.backward(None);
+        assert_eq!(result.gradient(), arr![arr![1.0]]);
+        assert_eq!(c.gradient(), arr![arr![5.0]]);
+        assert_eq!(b.gradient(), arr![arr![0.75]]);
+        assert_eq!(a.gradient(), arr![arr![0.9375]]);
     }
 
     #[test]

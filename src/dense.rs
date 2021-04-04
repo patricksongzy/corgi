@@ -4,10 +4,11 @@ use crate::array::*;
 struct Dense {
     weights: Array,
     biases: Array,
+    activation: bool,
 }
 
 impl Dense {
-    fn new(input_size: usize, output_size: usize) -> Dense {
+    fn new(input_size: usize, output_size: usize, activation: bool) -> Dense {
         // TODO this should not be in `dense.rs`
         // TODO He Initialisation
         use rand::Rng;
@@ -16,12 +17,14 @@ impl Dense {
         Dense {
             weights: Arrays::new((vec![output_size, input_size], (0..input_size * output_size)
                 .map(|_| rng.gen_range(-range..=range)).collect::<Vec<Float>>())),
-            biases: Arrays::new(vec![0.0; output_size])
+            biases: Arrays::new(vec![0.0; output_size]),
+            activation
         }
     }
 
     fn forward(&self, x: Array) -> Array {
-        &Array::matmul(&self.weights, &x, false, false) + &self.biases
+        let y = &Array::matmul(&self.weights, &x, false, false) + &self.biases;
+        if self.activation { y.sigmoid() } else { y }
     }
 }
 
@@ -35,21 +38,21 @@ mod tests {
         let mut rng = rand::thread_rng();
         let lr = 0.01;
         let input_size = 1;
-        let hidden_size = 8;
+        let hidden_size = 16;
         let output_size = 1;
-        let mut l1 = Dense::new(input_size, hidden_size);
-        let mut l2 = Dense::new(hidden_size, output_size);
-        for _ in 0..1000 {
-            // let input = Arrays::new((vec![input_size, 1], (0..input_size).map(|_| rng.gen_range(0.0..1.0))
-            //     .collect::<Vec<Float>>()));
-            let x = rng.gen_range(0.0..1.0);
+        let mut l1 = Dense::new(input_size, hidden_size, true);
+        let mut l2 = Dense::new(hidden_size, output_size, false);
+        for _ in 0..1024 {
+            let x = rng.gen_range(-1.0..1.0);
             let input = arr![arr![x]];
             let r1 = l1.forward(input);
             let r2 = l2.forward(r1);
 
-            let target = 0.5 * x + 0.5;
+            let mut target = x.sin();
+
             let mut error = (&arr![target] + &(-&r2)).powf(2.0);
             let loss = error.sum();
+
             println!("in: {}, out: {}, target: {}, loss: {}", x, r2[0], target, loss);
 
             error.backward(None);
