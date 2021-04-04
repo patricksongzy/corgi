@@ -14,6 +14,7 @@ use std::sync::mpsc::Sender;
 use std::sync::mpsc::Receiver;
 use std::thread;
 
+// TODO more ergonomic Array creation
 /// Helper trait to construct `Array` structs.
 pub trait Arrays {
     /// Constructs a new `Array`.
@@ -45,14 +46,14 @@ impl Arrays for Vec<Array> {
     }
 }
 
-/// Implementation to construct `Array` structs directly from a `Vec<Float>`.
+/// Implementation to construct `Array` structs by using `Vec<Float>` as the values, and by keeping flat dimensions.
 impl Arrays for Vec<Float> {
     fn new(self) -> Array {
         Arrays::new((vec![self.len()], self))
     }
 }
 
-// TODO more ergonomic Array creation
+/// Implementation to construct `Array` structs by using `Vec<usize>` as the dimensions, and filling values with zeros.
 impl Arrays for Vec<usize> {
     fn new(self) -> Array {
         let product = self.iter().fold(1, |acc, x| acc * x);
@@ -60,6 +61,8 @@ impl Arrays for Vec<usize> {
     }
 }
 
+/// Implementation to construct `Array` structs by using `Vec<usize>` as the dimensions, and `Vec<Float>`
+/// as the values.
 impl Arrays for (Vec<usize>, Vec<Float>) {
     fn new(self) -> Array {
         let (dimensions, values) = self;
@@ -131,20 +134,33 @@ macro_rules! arr {
     };
 }
 
+// TODO error handling
 impl Array {
+    /// Returns a copy of the gradient.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no gradient exists.
     pub fn gradient(&self) -> Array {
         self.gradient.lock().unwrap().clone().unwrap()
     }
 
+    /// Returns a guard for the gradient option.
+    ///
+    /// # Panics
+    ///
+    /// Panics if unable to obtain a lock on the Mutex.
     pub fn gradient_mut(&mut self) -> MutexGuard<Option<Array>> {
         self.gradient.lock().unwrap()
     }
 
+    /// Prevents tracking of operations for the backward pass.
     pub fn untracked(&mut self) -> &Array {
         self.untracked = true;
         self
     }
 
+    /// Tracks operations for the backward pass.
     pub fn tracked(&mut self) -> &Array {
         self.untracked = false;
         self
@@ -156,11 +172,13 @@ impl Array {
         self
     }
 
+    /// Sets the backward operation of the array for the backward pass.
     fn with_backward_op(mut self, backward_op: Option<Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>>) -> Array {
         self.backward_op = backward_op;
         self
     }
 
+    /// Performs a matrix multiplication on two arrays.
     fn matmul_flat(values: &mut Vec<Float>, output_rows: usize, output_cols: usize, sum_len: usize, offset: usize,
                    output_offset: usize, a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
         for r in 0..output_rows {
@@ -178,6 +196,7 @@ impl Array {
         }
     }
 
+    /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
     fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
@@ -219,31 +238,37 @@ impl Array {
             }
         }
 
-        let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-            let delta_a = if a_transpose {
-                Array::matmul_values(&c[1], x, b_transpose, true, false)
-            } else {
-                Array::matmul_values(x, &c[1], false, !b_transpose, false)
-            };
-
-            let delta_b = if b_transpose {
-                Array::matmul_values(x, &c[0], true, a_transpose, false)
-            } else {
-                Array::matmul_values(&c[0], x, !a_transpose, false, false)
-            };
-
-            vec![delta_a, delta_b]
-        });
-
         let result = Arrays::new((output_dimensions, output_values));
 
-        if has_backward { result.with_children(vec![a.clone(), b.clone()]).with_backward_op(Some(backward_op)) } else { result }
+        if has_backward {
+            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                let delta_a = if a_transpose {
+                    Array::matmul_values(&c[1], x, b_transpose, true, false)
+                } else {
+                    Array::matmul_values(x, &c[1], false, !b_transpose, false)
+                };
+
+                let delta_b = if b_transpose {
+                    Array::matmul_values(x, &c[0], true, a_transpose, false)
+                } else {
+                    Array::matmul_values(&c[0], x, !a_transpose, false, false)
+                };
+
+                vec![delta_a, delta_b]
+            });
+
+            result.with_children(vec![a.clone(), b.clone()]).with_backward_op(Some(backward_op))
+        } else {
+            result
+        }
     }
 
+    /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
     pub fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
         Array::matmul_values(a, b, a_transpose, b_transpose, true)
     }
 
+    /// Raises the array to the specified exponent.
     pub fn powf(&self, exponent: Float) -> Array {
         let values = self.values.iter().map(|x| x.powf(exponent)).collect::<Vec<Float>>();
         let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
@@ -255,6 +280,7 @@ impl Array {
         if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
     }
 
+    /// Performs the sigmoid operation on each value of the array.
     pub fn sigmoid(&self) -> Array {
         let values = Arc::new(self.values.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<Float>>());
         let cached = Arc::clone(&values);
@@ -268,6 +294,7 @@ impl Array {
         if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
     }
 
+    /// Sums the values of the array.
     pub fn sum(&self) -> Float {
         self.values.iter().sum()
     }
@@ -308,11 +335,7 @@ impl Array {
         mem::drop(consumer_count);
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
-        self.backward_propagate(Some(delta), false);
-    }
-
-    pub fn backward(&mut self, delta: Option<Array>) {
-        self.backward_propagate(delta, true);
+        self.backward(Some(delta));
     }
 
     /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
@@ -320,14 +343,11 @@ impl Array {
     /// # Panics
     ///
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
-    fn backward_propagate(&mut self, delta: Option<Array>, propagate: bool) {
-        if propagate {
-            self.propagate_consumers();
-        }
-
+    pub fn backward(&mut self, delta: Option<Array>) {
         let mut delta = match delta {
             Some(x) => x,
             None => {
+                self.propagate_consumers();
                 Arrays::new((Arc::clone(&self.dimensions), Arc::new(vec![1.0; self.values.len()])))
             },
         };
@@ -428,6 +448,7 @@ impl Index<Vec<usize>> for Array {
     }
 }
 
+/// Converts indices by dimension to a single flattened index.
 fn flatten_indices(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
     let is_indices_valid = indices.len() == dimensions.len()
         && !indices.iter().zip(dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
