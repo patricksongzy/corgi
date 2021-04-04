@@ -32,14 +32,10 @@ use std::ops;
 use std::ops::Index;
 
 use std::fmt;
-use std::mem;
 
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::MutexGuard;
-use std::sync::mpsc::channel;
-use std::sync::mpsc::Sender;
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 // TODO more ergonomic Array creation
@@ -55,7 +51,9 @@ impl Arrays for Vec<Array> {
     fn new(self) -> Array {
         // check if any of the contained array dimensions mismatch
         let is_dimensions_valid = match self.split_first() {
-            Some((first, elements)) => elements.iter().all(|item| *item.dimensions == *first.dimensions),
+            Some((first, elements)) => elements
+                .iter()
+                .all(|item| *item.dimensions == *first.dimensions),
             None => true,
         };
 
@@ -67,8 +65,11 @@ impl Arrays for Vec<Array> {
         dimensions.append(&mut (*self.first().unwrap().dimensions).clone());
 
         // take ownership if possible, but clone otherwise
-        let values = self.into_iter().map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
-            .flatten().collect::<Vec<Float>>();
+        let values = self
+            .into_iter()
+            .map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
+            .flatten()
+            .collect::<Vec<Float>>();
 
         Arrays::new((dimensions, values))
     }
@@ -84,7 +85,7 @@ impl Arrays for Vec<Float> {
 /// Implementation to construct `Array` structs by using `Vec<usize>` as the dimensions, and filling values with zeros.
 impl Arrays for Vec<usize> {
     fn new(self) -> Array {
-        let product = self.iter().fold(1, |acc, x| acc * x);
+        let product = self.iter().product();
         Arrays::new((self, vec![0.0; product]))
     }
 }
@@ -105,9 +106,9 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
         let (dimensions, values) = self;
         Array {
             dimensions,
-            values: values,
+            values,
             children: Arc::new(Mutex::new(Vec::new())),
-            consumer_count: Arc::new(Mutex::new(0)),
+            consumer_count: Arc::new(AtomicUsize::new(0)),
             backward_op: None,
             tx: Arc::new(Mutex::new(None)),
             untracked: false,
@@ -115,6 +116,9 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
         }
     }
 }
+
+/// The backward operation computes deltas with respect to inputs.
+type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>;
 
 // TODO add flag to not store gradient
 // TODO add poisoned flag, if Array has been modified
@@ -139,13 +143,13 @@ pub struct Array {
     dimensions: Arc<Vec<usize>>,
     values: Arc<Vec<Float>>,
     children: Arc<Mutex<Vec<Array>>>,
-    consumer_count: Arc<Mutex<usize>>,
-    backward_op: Option<Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>>,
+    consumer_count: Arc<AtomicUsize>,
+    backward_op: Option<BackwardOp>,
     tx: Arc<Mutex<Option<Sender<Array>>>>,
     untracked: bool,
     gradient: Arc<Mutex<Option<Array>>>,
 }
- 
+
 // TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
 /// Creates an `Array` with either:
 /// * Contained arrays:
@@ -177,7 +181,7 @@ macro_rules! arr {
             $(
                 values.push($x);
             )*
- 
+
             Arrays::new(values)
         }
     };
@@ -222,22 +226,49 @@ impl Array {
     }
 
     /// Sets the backward operation of the array for the backward pass.
-    fn with_backward_op(mut self, backward_op: Option<Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>>) -> Array {
+    fn with_backward_op(mut self, backward_op: Option<BackwardOp>) -> Array {
         self.backward_op = backward_op;
         self
     }
 
-    /// Performs a matrix multiplication on two arrays.
-    fn matmul_flat(values: &mut Vec<Float>, output_rows: usize, output_cols: usize, sum_len: usize, offset: usize,
-                   output_offset: usize, a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) {
+    /// Performs a matrix multiplication on two arrays, storing the result in `values`.
+    ///
+    /// # Arguments
+    ///
+    /// `values` - The result values.
+    /// `matmul_dimensions` - The dimensions to compute from: `(output_rows, output_cols, sum_len)`.
+    /// `offsets` - The offsets from where the matrices are stored in the arrays: `(offset, output_offset)`.
+    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
+    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    fn matmul_flat(
+        values: &mut Vec<Float>,
+        matmul_dimensions: (usize, usize, usize),
+        offsets: (usize, usize),
+        a: (&Array, bool),
+        b: (&Array, bool),
+    ) {
+        let (output_rows, output_cols, sum_len) = matmul_dimensions;
+        let (offset, output_offset) = offsets;
+        let (a, a_transpose) = a;
+        let (b, b_transpose) = b;
         for r in 0..output_rows {
             for j in 0..output_cols {
                 let mut sum = 0.0;
 
                 for k in 0..sum_len {
                     // TODO cleanup
-                    sum += a[offset + if a_transpose { k * output_rows + r } else { r * sum_len + k }]
-                        * b[offset + if b_transpose { j * sum_len + k } else { k * output_cols + j }];
+                    sum += a[offset
+                        + if a_transpose {
+                            k * output_rows + r
+                        } else {
+                            r * sum_len + k
+                        }]
+                        * b[offset
+                            + if b_transpose {
+                                j * sum_len + k
+                            } else {
+                                k * output_cols + j
+                            }];
                 }
 
                 values[output_offset + r * output_cols + j] = sum;
@@ -246,35 +277,84 @@ impl Array {
     }
 
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
-    fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
+    ///
+    /// # Arguments
+    ///
+    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
+    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    fn matmul_values(a: (&Array, bool), b: (&Array, bool)) -> Array {
+        let (a, a_transpose) = a;
+        let (b, b_transpose) = b;
+
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
         if a.dimensions.len() != b.dimensions.len() {
-            panic!("error: the dimensions {:?}, and {:?} are not compatible", a.dimensions, b.dimensions);
+            panic!(
+                "error: the dimensions {:?}, and {:?} are not compatible",
+                a.dimensions, b.dimensions
+            );
         }
 
-        let mut indices = vec![0; a.dimensions.len().checked_sub(2).unwrap_or(0)];
+        let mut indices = vec![0; a.dimensions.len().saturating_sub(2)];
 
         // TODO clean up
-        let output_rows = if a.dimensions.len() < 2 { 1 } else { a.dimensions[a.dimensions.len()
-            - if a_transpose { 1 } else { 2 }] };
-        let output_cols = if b.dimensions.len() < 2 { 1 } else { b.dimensions[b.dimensions.len()
-            - if b_transpose { 2 } else { 1 }] };
-        let sum_len = if a.dimensions.len() < 2 && a_transpose { 1 }
-            else { a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }]};
+        let output_rows = if a.dimensions.len() < 2 {
+            1
+        } else {
+            a.dimensions[a.dimensions.len() - if a_transpose { 1 } else { 2 }]
+        };
+        let output_cols = if b.dimensions.len() < 2 {
+            1
+        } else {
+            b.dimensions[b.dimensions.len() - if b_transpose { 2 } else { 1 }]
+        };
+        let sum_len = if a.dimensions.len() < 2 && a_transpose {
+            1
+        } else {
+            a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }]
+        };
 
-        let output_dimensions: Vec<usize> = a.dimensions.iter().copied().take(indices.len())
-            .chain(if a.dimensions.len() < 2 { vec![output_cols] } else { vec![output_rows, output_cols] }).collect();
+        let output_dimensions: Vec<usize> = a
+            .dimensions
+            .iter()
+            .copied()
+            .take(indices.len())
+            .chain(if a.dimensions.len() < 2 {
+                vec![output_cols]
+            } else {
+                vec![output_rows, output_cols]
+            })
+            .collect();
 
-        let output_length = output_dimensions.iter().fold(1, |acc, x| acc * x);
+        let output_length = output_dimensions.iter().product();
         let mut output_values = vec![0.0; output_length];
 
-        let product = a.dimensions.iter().rev().skip(2).fold(1, |acc, x| acc * x);
+        let product = a.dimensions.iter().rev().skip(2).product();
         for _ in 0..product {
-            Array::matmul_flat(&mut output_values, output_rows, output_cols, sum_len,
-                flatten_indices(indices.iter().copied().chain(vec![0; a.dimensions.len() - indices.len()]).collect(), &a.dimensions),
-                flatten_indices(indices.iter().copied().chain(vec![0; output_dimensions.len() - indices.len()]).collect(), &output_dimensions),
-                a, b, a_transpose, b_transpose);
+            Array::matmul_flat(
+                &mut output_values,
+                (output_rows, output_cols, sum_len),
+                (
+                    flatten_indices(
+                        indices
+                            .iter()
+                            .copied()
+                            .chain(vec![0; a.dimensions.len() - indices.len()])
+                            .collect(),
+                        &a.dimensions,
+                    ),
+                    flatten_indices(
+                        indices
+                            .iter()
+                            .copied()
+                            .chain(vec![0; output_dimensions.len() - indices.len()])
+                            .collect(),
+                        &output_dimensions,
+                    ),
+                ),
+                (a, a_transpose),
+                (b, b_transpose),
+            );
 
             for j in 0..indices.len() {
                 let current = indices.len() - j - 1;
@@ -294,30 +374,28 @@ impl Array {
         } else {
             let backward_a = Box::new(move |c: &mut Vec<Array>, x: &mut Array| {
                 if a_transpose {
-                    Array::matmul_values(c[1].untracked(), x.untracked(), b_transpose, true)
+                    Array::matmul_values((c[1].untracked(), b_transpose), (x.untracked(), true))
                 } else {
-                    Array::matmul_values(x.untracked(), c[1].untracked(), false, !b_transpose)
+                    Array::matmul_values((x.untracked(), false), (c[1].untracked(), !b_transpose))
                 }
             });
 
             let backward_b = Box::new(move |c: &mut Vec<Array>, x: &mut Array| {
                 if b_transpose {
-                    Array::matmul_values(x.untracked(), c[0].untracked(), true, a_transpose)
+                    Array::matmul_values((x.untracked(), true), (c[0].untracked(), a_transpose))
                 } else {
-                    Array::matmul_values(c[0].untracked(), x.untracked(), !a_transpose, false)
+                    Array::matmul_values((c[0].untracked(), !a_transpose), (x.untracked(), false))
                 }
             });
 
-            let (children, backward_op): (Vec<Array>, Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>) = if a.untracked {
-                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                    vec![backward_b(c, x)]
-                });
+            let (children, backward_op): (Vec<Array>, BackwardOp) = if a.untracked {
+                let backward_op =
+                    Arc::new(move |c: &mut Vec<Array>, x: &mut Array| vec![backward_b(c, x)]);
 
                 (vec![b.clone()], backward_op)
             } else if b.untracked {
-                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                    vec![backward_a(c, x)]
-                });
+                let backward_op =
+                    Arc::new(move |c: &mut Vec<Array>, x: &mut Array| vec![backward_a(c, x)]);
 
                 (vec![a.clone()], backward_op)
             } else {
@@ -328,19 +406,30 @@ impl Array {
                 (vec![a.clone(), b.clone()], backward_op)
             };
 
-            result.with_children(children).with_backward_op(Some(backward_op))
+            result
+                .with_children(children)
+                .with_backward_op(Some(backward_op))
         }
     }
 
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
-    pub fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
-        Array::matmul_values(a, b, a_transpose, b_transpose)
+    ///
+    /// # Arguments
+    ///
+    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
+    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    pub fn matmul(a: (&Array, bool), b: (&Array, bool)) -> Array {
+        Array::matmul_values(a, b)
     }
 
     /// Raises the array to the specified exponent.
     pub fn powf(&self, exponent: Float) -> Array {
-        let values = self.values.iter().map(|x| x.powf(exponent)).collect::<Vec<Float>>();
-        
+        let values = self
+            .values
+            .iter()
+            .map(|x| x.powf(exponent))
+            .collect::<Vec<Float>>();
+
         let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(values)));
 
         if self.untracked {
@@ -350,13 +439,20 @@ impl Array {
                 vec![(c[0].untracked() * 2.0).untracked() * x.untracked()]
             });
 
-            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
         }
     }
 
     /// Performs the sigmoid operation on each value of the array.
     pub fn sigmoid(&self) -> Array {
-        let values = Arc::new(self.values.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<Float>>());
+        let values = Arc::new(
+            self.values
+                .iter()
+                .map(|x| 1.0 / (1.0 + (-x).exp()))
+                .collect::<Vec<Float>>(),
+        );
         let cached = Arc::clone(&values);
 
         let result = Arrays::new((Arc::clone(&self.dimensions), values));
@@ -365,11 +461,19 @@ impl Array {
             result
         } else {
             let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                let values = mul_values(&cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(), &x.values);
-                vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(values)))]
+                let values = mul_values(
+                    &cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(),
+                    &x.values,
+                );
+                vec![Arrays::new((
+                    Arc::clone(&c[0].dimensions),
+                    Arc::new(values),
+                ))]
             });
 
-            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
         }
     }
 
@@ -381,46 +485,43 @@ impl Array {
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
-            *child.consumer_count.lock().unwrap() += 1;
+            // *child.consumer_count.get_mut() += 1;
+            child.consumer_count.fetch_add(1, Ordering::Relaxed);
             child.propagate_consumers();
         }
     }
 
     /// Awaits for deltas from all consumers, then continues the backward pass.
-    /// 
+    ///
     /// # Panics
     ///
     /// Panics if the current node has no consumers (is an end node).
     fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
-        let mut consumer_count = self.consumer_count.lock().unwrap();
-
-        if *consumer_count == 0 {
-            mem::drop(consumer_count);
+        if self.consumer_count.load(Ordering::Relaxed) == 0 {
             self.backward(Some(delta));
             return;
         }
 
         let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
-        *consumer_count -= 1;
+        self.consumer_count.fetch_sub(1, Ordering::Relaxed);
         let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
             acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
         };
 
-        while *consumer_count > 0 {
+        while self.consumer_count.load(Ordering::Relaxed) > 0 {
             let received = rx.recv().unwrap();
-            *consumer_count -= 1;
+            self.consumer_count.fetch_sub(1, Ordering::Relaxed);
             sum(&mut delta, &received.values);
         }
 
         *self.tx.lock().unwrap() = None;
-        mem::drop(consumer_count);
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
         self.backward(Some(delta));
     }
 
     /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
-    /// 
+    ///
     /// # Panics
     ///
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
@@ -429,8 +530,11 @@ impl Array {
             Some(x) => x,
             None => {
                 self.propagate_consumers();
-                Arrays::new((Arc::clone(&self.dimensions), Arc::new(vec![1.0; self.values.len()])))
-            },
+                Arrays::new((
+                    Arc::clone(&self.dimensions),
+                    Arc::new(vec![1.0; self.values.len()]),
+                ))
+            }
         };
 
         match &self.backward_op {
@@ -444,16 +548,16 @@ impl Array {
                     match &*tx_guard {
                         Some(x) => {
                             x.send(delta).unwrap();
-                        },
+                        }
                         None => {
                             let mut child = children_guard[i].clone();
 
                             let (tx, rx) = channel();
                             *tx_guard = Some(tx);
-                            handles.push(thread::spawn(move|| {
+                            handles.push(thread::spawn(move || {
                                 child.await_results(rx, delta);
                             }));
-                        },
+                        }
                     }
                 }
 
@@ -461,18 +565,18 @@ impl Array {
                 for handle in handles {
                     handle.join().unwrap();
                 }
-            },
+            }
             None => {
                 if self.children.lock().unwrap().len() != 0 {
                     panic!("error: operation is not differentiable")
                 }
-            },
+            }
         }
 
         let mut gradient_guard = self.gradient.lock().unwrap();
         match &mut *gradient_guard {
             Some(x) => *gradient_guard = Some(x.untracked() + delta.untracked()),
-            None => *gradient_guard = Some(delta)
+            None => *gradient_guard = Some(delta),
         }
     }
 }
@@ -505,13 +609,16 @@ impl PartialEq for Array {
 
 impl fmt::Debug for Array {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Array").field("dimensions", &*self.dimensions).field("values", &*self.values).finish()
+        f.debug_struct("Array")
+            .field("dimensions", &*self.dimensions)
+            .field("values", &*self.values)
+            .finish()
     }
 }
 
 impl Index<usize> for Array {
     type Output = Float;
- 
+
     fn index(&self, index: usize) -> &Self::Output {
         if index >= self.values.len() {
             panic!("error: invalid index supplied");
@@ -523,37 +630,44 @@ impl Index<usize> for Array {
 
 impl Index<Vec<usize>> for Array {
     type Output = Float;
- 
+
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
         &self.values[flatten_indices(indices, &*self.dimensions)]
     }
 }
 
 /// Converts indices by dimension to a single flattened index.
-fn flatten_indices(indices: Vec<usize>, dimensions: &Vec<usize>) -> usize {
+fn flatten_indices(indices: Vec<usize>, dimensions: &[usize]) -> usize {
     let is_indices_valid = indices.len() == dimensions.len()
-        && !indices.iter().zip(dimensions).filter(|&(i, d)| *i >= *d).peekable().peek().is_some();
+        && indices
+            .iter()
+            .zip(dimensions)
+            .filter(|&(i, d)| *i >= *d)
+            .peekable()
+            .peek()
+            .is_none();
 
     if !is_indices_valid {
         panic!("error: invalid indices supplied")
-    } 
+    }
 
     let mut iter = indices.iter();
     let first = iter.next().unwrap();
 
     // dimensions will always have at least one element
-    iter.zip(dimensions.iter().skip(1)).fold(*first, |acc, (i, d)| acc * d + i)
+    iter.zip(dimensions.iter().skip(1))
+        .fold(*first, |acc, (i, d)| acc * d + i)
 }
 
-fn add_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
+fn add_values(a: &[Float], b: &[Float]) -> Vec<Float> {
     a.iter().zip(b).map(|(x, y)| x + y).collect::<Vec<Float>>()
 }
 
-fn scale_values(a: &Vec<Float>, s: Float) -> Vec<Float> {
+fn scale_values(a: &[Float], s: Float) -> Vec<Float> {
     a.iter().map(|x| x * s).collect::<Vec<Float>>()
 }
 
-fn mul_values(a: &Vec<Float>, b: &Vec<Float>) -> Vec<Float> {
+fn mul_values(a: &[Float], b: &[Float]) -> Vec<Float> {
     a.iter().zip(b).map(|(x, y)| x * y).collect::<Vec<Float>>()
 }
 
@@ -563,7 +677,10 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
         // TODO broadcasting, checking for valid dimensions
-        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(add_values(&self.values, &other.values)))); 
+        let result = Arrays::new((
+            Arc::clone(&self.dimensions),
+            Arc::new(add_values(&self.values, &other.values)),
+        ));
         if self.untracked && other.untracked {
             result
         } else {
@@ -577,9 +694,12 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
                 vec![self.clone(), other.clone()]
             };
 
-            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![Arrays::new((Arc::clone(&x.dimensions),
-                Arc::clone(&x.values))); delta_count]);
-            result.with_children(children).with_backward_op(Some(backward_op))
+            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
+                vec![Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values))); delta_count]
+            });
+            result
+                .with_children(children)
+                .with_backward_op(Some(backward_op))
         }
     }
 }
@@ -598,12 +718,18 @@ impl<'a> ops::Neg for &'a Array {
 
     #[inline]
     fn neg(self) -> Self::Output {
-        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(scale_values(&self.values, -1.0))));
+        let result = Arrays::new((
+            Arc::clone(&self.dimensions),
+            Arc::new(scale_values(&self.values, -1.0)),
+        ));
         if self.untracked {
             result
         } else {
-            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![-x.untracked()]);
-            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+            let backward_op =
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![-x.untracked()]);
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
         }
     }
 }
@@ -613,12 +739,18 @@ impl<'a> ops::Mul<Float> for &'a Array {
 
     #[inline]
     fn mul(self, other: Float) -> Self::Output {
-        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(scale_values(&self.values, other))));
+        let result = Arrays::new((
+            Arc::clone(&self.dimensions),
+            Arc::new(scale_values(&self.values, other)),
+        ));
         if self.untracked {
             result
         } else {
-            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![x.untracked() * other]);
-            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+            let backward_op =
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![x.untracked() * other]);
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
         }
     }
 }
@@ -629,24 +761,37 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
         // TODO broadcasting, checking for valid dimensions
-        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(mul_values(&self.values, &other.values))));
+        let result = Arrays::new((
+            Arc::clone(&self.dimensions),
+            Arc::new(mul_values(&self.values, &other.values)),
+        ));
 
         if self.untracked && other.untracked {
             result
         } else {
-            let (children, backward_op): (Vec<Array>, Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>) = if self.untracked {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[0].untracked() * x.untracked()]);
+            let (children, backward_op): (Vec<Array>, BackwardOp) = if self.untracked {
+                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                    vec![c[0].untracked() * x.untracked()]
+                });
                 (vec![other.clone()], backward_op)
             } else if other.untracked {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[1].untracked() * x.untracked()]);
+                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                    vec![c[1].untracked() * x.untracked()]
+                });
                 (vec![self.clone()], backward_op)
             } else {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[1].untracked() * x.untracked(), c[0].untracked() * x.untracked()]);
+                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                    vec![
+                        c[1].untracked() * x.untracked(),
+                        c[0].untracked() * x.untracked(),
+                    ]
+                });
                 (vec![self.clone(), other.clone()], backward_op)
             };
 
-            result.with_children(children).with_backward_op(Some(backward_op))
-
+            result
+                .with_children(children)
+                .with_backward_op(Some(backward_op))
         }
     }
 }
@@ -660,28 +805,30 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_new() {
-        let matrix = arr![arr![
-            arr![0.0], arr![1.0]
-        ],
-        arr![
-            arr![2.0], arr![3.0]
-        ],
-        arr![
-            arr![4.0], arr![5.0]
-        ]];
-        
+        let matrix = arr![
+            arr![arr![0.0], arr![1.0]],
+            arr![arr![2.0], arr![3.0]],
+            arr![arr![4.0], arr![5.0]]
+        ];
+
         assert_eq!(*matrix.dimensions, vec![3, 2, 1]);
-        assert_eq!(*matrix.values, (0..6).map(|x| x as Float).collect::<Vec<Float>>());
+        assert_eq!(
+            *matrix.values,
+            (0..6).map(|x| x as Float).collect::<Vec<Float>>()
+        );
     }
 
     #[test]
     fn test_zeros() {
         let matrix = Arrays::new(vec![3, 2, 3]);
         assert_eq!(*matrix.dimensions, vec![3, 2, 3]);
-        assert_eq!(*matrix.values, (0..18).map(|_| 0 as Float).collect::<Vec<Float>>());
+        assert_eq!(
+            *matrix.values,
+            (0..18).map(|_| 0 as Float).collect::<Vec<Float>>()
+        );
     }
 
     #[test]
@@ -698,7 +845,7 @@ mod tests {
     fn test_ne() {
         let a = arr![1.0, 2.0, 3.0];
         let b = arr![2.0, 2.0, 3.0];
-        
+
         assert_ne!(a, b);
 
         let c = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
@@ -706,62 +853,45 @@ mod tests {
 
         assert_ne!(c, d);
     }
-    
+
     #[test]
     #[should_panic]
-    fn test_invalid_dimensions() { 
-        arr![arr![ 
-            arr![0.0], arr![1.0]
-        ],
-        arr![
-            arr![2.0, 3.0], arr![4.0]
-        ]];                              
+    fn test_invalid_dimensions() {
+        arr![arr![arr![0.0], arr![1.0]], arr![arr![2.0, 3.0], arr![4.0]]];
     }
-    
+
     #[test]
     fn test_access() {
-        let matrix = arr![arr![
-            arr![0.0, 1.0, 2.0], arr![3.0, 4.0, 5.0]
-        ],
-        arr![
-            arr![6.0, 7.0, 8.0], arr![9.0, 10.0, 11.0]
-        ],
-        arr![
-            arr![12.0, 13.0, 14.0], arr![15.0, 16.0, 17.0]
-        ]];
+        let matrix = arr![
+            arr![arr![0.0, 1.0, 2.0], arr![3.0, 4.0, 5.0]],
+            arr![arr![6.0, 7.0, 8.0], arr![9.0, 10.0, 11.0]],
+            arr![arr![12.0, 13.0, 14.0], arr![15.0, 16.0, 17.0]]
+        ];
 
         assert_eq!(matrix[vec![1, 1, 2]], 11.0);
     }
 
     #[test]
     fn test_arithmetic() {
-        let a = arr![arr![
-            arr![0.0, 1.0], arr![2.0, 3.0]
-        ],
-        arr![
-            arr![4.0, 5.0], arr![6.0, 7.0]
-        ]];
+        let a = arr![
+            arr![arr![0.0, 1.0], arr![2.0, 3.0]],
+            arr![arr![4.0, 5.0], arr![6.0, 7.0]]
+        ];
 
-        let b = arr![arr![
-            arr![2.0, 4.0], arr![6.0, 8.0]
-        ],
-        arr![
-            arr![10.0, 12.0], arr![14.0, 16.0]
-        ]];
+        let b = arr![
+            arr![arr![2.0, 4.0], arr![6.0, 8.0]],
+            arr![arr![10.0, 12.0], arr![14.0, 16.0]]
+        ];
 
-        let sum_expect = arr![arr![
-            arr![2.0, 5.0], arr![8.0, 11.0]
-        ],
-        arr![
-            arr![14.0, 17.0], arr![20.0, 23.0]
-        ]];
+        let sum_expect = arr![
+            arr![arr![2.0, 5.0], arr![8.0, 11.0]],
+            arr![arr![14.0, 17.0], arr![20.0, 23.0]]
+        ];
 
-        let product_expect = arr![arr![
-            arr![0.0, 4.0], arr![12.0, 24.0]
-        ],
-        arr![
-            arr![40.0, 60.0], arr![84.0, 112.0]
-        ]];
+        let product_expect = arr![
+            arr![arr![0.0, 4.0], arr![12.0, 24.0]],
+            arr![arr![40.0, 60.0], arr![84.0, 112.0]]
+        ];
 
         let sum = &a + &b;
         let product = &a * &b;
@@ -772,72 +902,60 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let a = arr![
-            arr![1.0, 2.0, 3.0],
-            arr![4.0, 5.0, 6.0]
-        ];
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
 
-        let b = arr![
-            arr![5.0, 3.0],
-            arr![2.0, 6.0],
-            arr![1.0, 2.0]
-        ];
-        
-        let matmul_expect = arr![
-            arr![12.0, 21.0],
-            arr![36.0, 54.0]
-        ];
+        let b = arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]];
 
-        let mut result = Array::matmul(&a, &b, false, false);
+        let matmul_expect = arr![arr![12.0, 21.0], arr![36.0, 54.0]];
+
+        let mut result = Array::matmul((&a, false), (&b, false));
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
         assert_eq!(result.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
+        assert_eq!(
+            b.gradient(),
+            arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]
+        );
         assert_eq!(a.gradient(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
     }
 
     #[test]
     fn test_matmul_transpose() {
-        let a = arr![
-            arr![1.0, 4.0],
-            arr![2.0, 5.0],
-            arr![3.0, 6.0]
-        ];
+        let a = arr![arr![1.0, 4.0], arr![2.0, 5.0], arr![3.0, 6.0]];
 
-        let b = arr![
-            arr![5.0, 3.0],
-            arr![2.0, 6.0],
-            arr![1.0, 2.0]
-        ];
-        
-        let matmul_expect = arr![
-            arr![12.0, 21.0],
-            arr![36.0, 54.0]
-        ];
+        let b = arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]];
 
-        let mut result = Array::matmul(&a, &b, true, false);
+        let matmul_expect = arr![arr![12.0, 21.0], arr![36.0, 54.0]];
+
+        let mut result = Array::matmul((&a, true), (&b, false));
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
         assert_eq!(result.gradient(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
-        assert_eq!(b.gradient(), arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]);
-        assert_eq!(a.gradient(), arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]);
+        assert_eq!(
+            b.gradient(),
+            arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]
+        );
+        assert_eq!(
+            a.gradient(),
+            arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]
+        );
     }
 
     #[test]
     fn test_matmul_vec() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
         let b = arr![arr![1.0, 2.0, 3.0]];
-        let c = arr![arr![1.0], arr![2.0], arr![3.0]]; 
+        let c = arr![arr![1.0], arr![2.0], arr![3.0]];
 
-        let result = Array::matmul(&a, &b, false, true);
+        let result = Array::matmul((&a, false), (&b, true));
         assert_eq!(result, arr![arr![14.0], arr![32.0]]);
 
-        let result = Array::matmul(&b, &a, false, true);
+        let result = Array::matmul((&b, false), (&a, true));
         assert_eq!(result, arr![arr![14.0, 32.0]]);
 
-        let result = Array::matmul(&b, &c, false, false);
+        let result = Array::matmul((&b, false), (&c, false));
         assert_eq!(result, arr![arr![14.0]]);
     }
 
@@ -845,43 +963,61 @@ mod tests {
     fn test_matmul_single() {
         let a = arr![1.0, 2.0, 3.0];
         let b = arr![3.0, 2.0, 1.0];
-        let result = Array::matmul(&a, &b, false, false);
+        let result = Array::matmul((&a, false), (&b, false));
         assert_eq!(result, arr![10.0]);
     }
 
     #[test]
     fn test_matmul_multi() {
-        let a = arr![
-            arr![1.0, 2.0, 3.0],
-            arr![4.0, 5.0, 6.0]
-        ];
-        
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+
         let b = arr![arr![1.0], arr![2.0], arr![3.0]];
-        
+
         let c = arr![arr![1.0, 2.0, 3.0]];
 
-        let result = Array::matmul(&Array::matmul(&a, &b, false, false), &c, false, false);
+        let result = Array::matmul(
+            (&Array::matmul((&a, false), (&b, false)), false),
+            (&c, false),
+        );
         assert_eq!(result, arr![arr![14.0, 28.0, 42.0], arr![32.0, 64.0, 96.0]]);
     }
 
     #[test]
     fn test_matmul_nd() {
         let a = arr![
-            arr![arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]], arr![arr![6.0, 5.0, 4.0], arr![3.0, 2.0, 1.0]]],
-            arr![arr![arr![9.0, 8.0, 7.0], arr![4.0, 5.0, 6.0]], arr![arr![6.0, 7.0, 8.0], arr![3.0, 2.0, 1.0]]]
+            arr![
+                arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]],
+                arr![arr![6.0, 5.0, 4.0], arr![3.0, 2.0, 1.0]]
+            ],
+            arr![
+                arr![arr![9.0, 8.0, 7.0], arr![4.0, 5.0, 6.0]],
+                arr![arr![6.0, 7.0, 8.0], arr![3.0, 2.0, 1.0]]
+            ]
         ];
 
         let b = arr![
-            arr![arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]], arr![arr![3.0, 6.0], arr![2.0, 5.0], arr![1.0, 4.0]]],
-            arr![arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![8.0, 7.0]], arr![arr![8.0, 6.0], arr![5.0, 3.0], arr![4.0, 7.0]]]
+            arr![
+                arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]],
+                arr![arr![3.0, 6.0], arr![2.0, 5.0], arr![1.0, 4.0]]
+            ],
+            arr![
+                arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![8.0, 7.0]],
+                arr![arr![8.0, 6.0], arr![5.0, 3.0], arr![4.0, 7.0]]
+            ]
         ];
 
         let matmul_expect = arr![
-            arr![arr![arr![12.0, 21.0], arr![36.0, 54.0]], arr![arr![32.0, 77.0], arr![14.0, 32.0]]],
-            arr![arr![arr![117.0, 124.0], arr![78.0, 84.0]], arr![arr![115.0, 113.0],arr![38.0, 31.0]]]
+            arr![
+                arr![arr![12.0, 21.0], arr![36.0, 54.0]],
+                arr![arr![32.0, 77.0], arr![14.0, 32.0]]
+            ],
+            arr![
+                arr![arr![117.0, 124.0], arr![78.0, 84.0]],
+                arr![arr![115.0, 113.0], arr![38.0, 31.0]]
+            ]
         ];
 
-        let result = Array::matmul(&a, &b, false, false);
+        let result = Array::matmul((&a, false), (&b, false));
         assert_eq!(result, matmul_expect);
     }
 
@@ -894,9 +1030,9 @@ mod tests {
         let mut sum = &product + &a;
 
         sum.propagate_consumers();
-        assert_eq!(*product.consumer_count.lock().unwrap(), 1);
-        assert_eq!(*b.consumer_count.lock().unwrap(), 1);
-        assert_eq!(*a.consumer_count.lock().unwrap(), 2);
+        assert_eq!(product.consumer_count.load(Ordering::Relaxed), 1);
+        assert_eq!(b.consumer_count.load(Ordering::Relaxed), 1);
+        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -905,7 +1041,8 @@ mod tests {
         let b = arr![2.0];
 
         let product = &a * &b;
-        let result = (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
+        let result =
+            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
         assert_eq!(result.len(), 2);
         assert_eq!(result, vec![arr![2.0], arr![5.0]]);
         assert!(!a.untracked);
@@ -960,10 +1097,19 @@ mod tests {
         let mut result = &c * &b;
         assert_eq!(result, arr![arr![3.0, 8.0, 9.0], arr![96.0, 125.0, 144.0]]);
         result.backward(None);
-        assert_eq!(result.gradient(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
+        assert_eq!(
+            result.gradient(),
+            arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]
+        );
         assert_eq!(c.gradient(), arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]);
-        assert_eq!(b.gradient(), arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]);
-        assert_eq!(a.gradient(), arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]);
+        assert_eq!(
+            b.gradient(),
+            arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]
+        );
+        assert_eq!(
+            a.gradient(),
+            arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]
+        );
     }
 
     #[test]
@@ -985,23 +1131,20 @@ mod tests {
     fn test_backward_matmul_vec() {
         let a = arr![arr![1.0, 2.0, 3.0]];
         let b = arr![arr![9.0, 8.0, 7.0]];
-        
-        let mut result = Array::matmul(&a, &b, false, true);
+
+        let mut result = Array::matmul((&a, false), (&b, true));
         result.backward(None);
     }
 
     #[test]
     fn test_backward_matmul_vec_multi() {
-        let a = arr![
-            arr![1.0, 2.0, 3.0],
-            arr![4.0, 5.0, 6.0]
-        ];
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
 
         let b = arr![arr![1.0], arr![2.0], arr![3.0]];
 
         let c = arr![arr![7.0], arr![8.0]];
 
-        let mut result = &Array::matmul(&a, &b, false, false) + &c;
+        let mut result = &Array::matmul((&a, false), (&b, false)) + &c;
         result.backward(None);
         assert_eq!(result.gradient(), arr![arr![1.0], arr![1.0]]);
         assert_eq!(c.gradient(), arr![arr![1.0], arr![1.0]]);
@@ -1011,21 +1154,27 @@ mod tests {
 
     #[test]
     fn test_backward_matmul_multi() {
-        let a = arr![
-            arr![1.0, 2.0, 3.0],
-            arr![4.0, 5.0, 6.0]
-        ];
-        
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+
         let b = arr![arr![1.0], arr![2.0], arr![3.0]];
-        
+
         let c = arr![arr![1.0, 2.0, 3.0]];
 
-        let mut result = Array::matmul(&Array::matmul(&a, &b, false, false), &c, false, false);
+        let mut result = Array::matmul(
+            (&Array::matmul((&a, false), (&b, false)), false),
+            (&c, false),
+        );
         result.backward(None);
-        assert_eq!(result.gradient(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
+        assert_eq!(
+            result.gradient(),
+            arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]
+        );
         assert_eq!(c.gradient(), arr![arr![46.0, 46.0, 46.0]]);
         assert_eq!(b.gradient(), arr![arr![30.0], arr![42.0], arr![54.0]]);
-        assert_eq!(a.gradient(), arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]);
+        assert_eq!(
+            a.gradient(),
+            arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]
+        );
     }
 
     #[test]
@@ -1044,9 +1193,9 @@ mod tests {
 
         let mut product = &a * &b;
         product.backward(None);
-        assert_eq!(*product.consumer_count.lock().unwrap(), 0);
-        assert_eq!(*b.consumer_count.lock().unwrap(), 0);
-        assert_eq!(*a.consumer_count.lock().unwrap(), 0);
+        assert_eq!(product.consumer_count.load(Ordering::Relaxed), 0);
+        assert_eq!(b.consumer_count.load(Ordering::Relaxed), 0);
+        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1108,7 +1257,7 @@ mod tests {
         assert_eq!(b.gradient(), arr![25.0, 4.0]);
         assert_eq!(a.gradient(), arr![70.0, 16.0]);
     }
-    
+
     #[test]
     fn test_backward_intermediate() {
         let a = arr![1.0, 2.0];
@@ -1131,7 +1280,7 @@ mod tests {
         b = &b + &a;
         b = &b * &a;
         b.backward(None);
-        
+
         assert_eq!(b.gradient(), arr![1.0, 1.0]);
         assert_eq!(a.gradient(), arr![7.0, 10.0]);
     }
@@ -1141,4 +1290,3 @@ mod tests {
         // TODO modify array before backward is called
     }
 }
-
