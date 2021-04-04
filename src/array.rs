@@ -1,3 +1,31 @@
+//! An n-dimensional array, with automatic differentation.
+//! # Examples
+//! ```
+//! # #[macro_use]
+//! # extern crate corgi;
+//!
+//! use corgi::array::*;
+//!
+//! # fn main() {
+//! let a = arr![5.0];
+//! let b = arr![2.0];
+//! let mut c = arr![0.0];
+//!
+//! for _ in 0..10 {
+//!     c = &c + &(&a * &b);
+//!     if c[0] > 50.0 {
+//!         c = &c * &a;
+//!     }
+//! }
+//!
+//! c.backward(None);
+//! assert_eq!(c, arr![195300.0]);
+//! assert_eq!(c.gradient(), arr![1.0]);
+//! assert_eq!(b.gradient(), arr![97650.0]);
+//! assert_eq!(a.gradient(), arr![232420.0]);
+//! # }
+//! ```
+
 use crate::numbers::*;
 
 use std::ops;
@@ -94,7 +122,7 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
 ///
 /// # Examples
 /// ```
-/// #[macro_use]
+/// # #[macro_use]
 /// # extern crate corgi;
 ///
 /// use corgi::array::*;
@@ -119,6 +147,27 @@ pub struct Array {
 }
  
 // TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
+/// Creates an `Array` with either:
+/// * Contained arrays:
+/// ```
+/// # #[macro_use]
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main() {
+/// let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+/// assert_eq!(a[vec![1, 2]], 6.0);
+/// # }
+/// ```
+/// * Contained `Vec<Float>`
+/// ```
+/// # #[macro_use]
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main() {
+/// let a = arr![1.0, 2.0, 3.0];
+/// assert_eq!(a[vec![1]], 2.0);
+/// # }
+/// ```
 #[macro_export]
 macro_rules! arr {
     ( $( $x:expr ),* ) => {
