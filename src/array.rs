@@ -244,6 +244,21 @@ impl Array {
         Array::matmul_values(a, b, a_transpose, b_transpose, true)
     }
 
+    pub fn powf(&self, exponent: Float) -> Array {
+        let values = self.values.iter().map(|x| x.powf(exponent)).collect::<Vec<Float>>();
+        let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+            vec![(c[0].untracked() * 2.0).untracked() * x.untracked()]
+        });
+        
+        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(values)));
+
+        if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
+    }
+
+    pub fn sum(&self) -> Float {
+        self.values.iter().sum()
+    }
+
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
@@ -801,10 +816,26 @@ mod tests {
         let b = arr![7.0, 8.0, 9.0];
 
         let mut product = &(-&a) * &b;
+        assert_eq!(product, arr![-7.0, -16.0, -27.0]);
         product.backward(None);
         assert_eq!(product.gradient(), arr![1.0, 1.0, 1.0]);
         assert_eq!(b.gradient(), arr![-1.0, -2.0, -3.0]);
         assert_eq!(a.gradient(), arr![-7.0, -8.0, -9.0]);
+    }
+
+    #[test]
+    fn test_backward_powf() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+        let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]];
+        let c = a.powf(2.0);
+
+        let mut result = &c * &b;
+        assert_eq!(result, arr![arr![3.0, 8.0, 9.0], arr![96.0, 125.0, 144.0]]);
+        result.backward(None);
+        assert_eq!(result.gradient(), arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]);
+        assert_eq!(c.gradient(), arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]);
+        assert_eq!(b.gradient(), arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]);
+        assert_eq!(a.gradient(), arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]);
     }
 
     #[test]

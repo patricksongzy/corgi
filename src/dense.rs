@@ -45,13 +45,14 @@ mod tests {
             let x = rng.gen_range(0.0..1.0);
             let input = arr![arr![x]];
             let r1 = l1.forward(input);
-            let mut r2 = l2.forward(r1);
+            let r2 = l2.forward(r1);
 
             let target = 0.5 * x + 0.5;
-            let loss = (target - r2[0]).powf(2.0);
-            let delta = 2.0 * (r2[0] - target);
-            r2.backward(Some(arr![arr![delta]]));
+            let mut error = (&arr![target] + &(-&r2)).powf(2.0);
+            let loss = error.sum();
             println!("in: {}, out: {}, target: {}, loss: {}", x, r2[0], target, loss);
+
+            error.backward(None);
 
             let mut gw2 = l2.weights.gradient();
             let mut gb2 = l2.biases.gradient();
