@@ -50,7 +50,7 @@ mod tests {
 
             let mut target = x.sin();
 
-            let mut error = (&arr![target] + &(-&r2)).powf(2.0);
+            let mut error = (&arr![target] - &r2).powf(2.0);
             let loss = error.sum();
 
             println!("in: {}, out: {}, target: {}, loss: {}", x, r2[0], target, loss);
