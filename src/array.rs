@@ -485,7 +485,6 @@ impl Array {
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
-            // *child.consumer_count.get_mut() += 1;
             child.consumer_count.fetch_add(1, Ordering::Relaxed);
             child.propagate_consumers();
         }
