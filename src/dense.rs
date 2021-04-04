@@ -23,7 +23,7 @@ impl Dense {
     }
 
     fn forward(&self, x: Array) -> Array {
-        let y = &Array::matmul(&self.weights, &x, false, false) + &self.biases;
+        let y = &Array::matmul((&self.weights, false), (&x, false)) + &self.biases;
         if self.activation { y.sigmoid() } else { y }
     }
 }
