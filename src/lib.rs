@@ -5,6 +5,8 @@ pub mod dense;
 pub mod layer;
 pub mod model;
 
+#[warn(missing_docs)]
+
 #[cfg(test)]
 mod tests {
     #[test]

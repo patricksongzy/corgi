@@ -197,7 +197,7 @@ impl Array {
     }
 
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
-    fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool, has_backward: bool) -> Array {
+    fn matmul_values(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
         // TODO broadcasting
         // TODO use BLAS, and take slice of floats instead
         if a.dimensions.len() != b.dimensions.len() {
@@ -240,58 +240,88 @@ impl Array {
 
         let result = Arrays::new((output_dimensions, output_values));
 
-        if has_backward {
-            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                let delta_a = if a_transpose {
-                    Array::matmul_values(&c[1], x, b_transpose, true, false)
+        if a.untracked && b.untracked {
+            result
+        } else {
+            let backward_a = Box::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                if a_transpose {
+                    Array::matmul_values(c[1].untracked(), x.untracked(), b_transpose, true)
                 } else {
-                    Array::matmul_values(x, &c[1], false, !b_transpose, false)
-                };
-
-                let delta_b = if b_transpose {
-                    Array::matmul_values(x, &c[0], true, a_transpose, false)
-                } else {
-                    Array::matmul_values(&c[0], x, !a_transpose, false, false)
-                };
-
-                vec![delta_a, delta_b]
+                    Array::matmul_values(x.untracked(), c[1].untracked(), false, !b_transpose)
+                }
             });
 
-            result.with_children(vec![a.clone(), b.clone()]).with_backward_op(Some(backward_op))
-        } else {
-            result
+            let backward_b = Box::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                if b_transpose {
+                    Array::matmul_values(x.untracked(), c[0].untracked(), true, a_transpose)
+                } else {
+                    Array::matmul_values(c[0].untracked(), x.untracked(), !a_transpose, false)
+                }
+            });
+
+            let (children, backward_op): (Vec<Array>, Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>) = if a.untracked {
+                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![backward_b(c, x)]
+                });
+
+                (vec![b.clone()], backward_op)
+            } else if b.untracked {
+                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![backward_a(c, x)]
+                });
+
+                (vec![a.clone()], backward_op)
+            } else {
+                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![backward_a(c, x), backward_b(c, x)]
+                });
+
+                (vec![a.clone(), b.clone()], backward_op)
+            };
+
+            result.with_children(children).with_backward_op(Some(backward_op))
         }
     }
 
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
     pub fn matmul(a: &Array, b: &Array, a_transpose: bool, b_transpose: bool) -> Array {
-        Array::matmul_values(a, b, a_transpose, b_transpose, true)
+        Array::matmul_values(a, b, a_transpose, b_transpose)
     }
 
     /// Raises the array to the specified exponent.
     pub fn powf(&self, exponent: Float) -> Array {
         let values = self.values.iter().map(|x| x.powf(exponent)).collect::<Vec<Float>>();
-        let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-            vec![(c[0].untracked() * 2.0).untracked() * x.untracked()]
-        });
         
         let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(values)));
 
-        if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
+        if self.untracked {
+            result
+        } else {
+            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                vec![(c[0].untracked() * 2.0).untracked() * x.untracked()]
+            });
+
+            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+        }
     }
 
     /// Performs the sigmoid operation on each value of the array.
     pub fn sigmoid(&self) -> Array {
         let values = Arc::new(self.values.iter().map(|x| 1.0 / (1.0 + (-x).exp())).collect::<Vec<Float>>());
         let cached = Arc::clone(&values);
-        let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-            let values = mul_values(&cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(), &x.values);
-            vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(values)))]
-        });
 
         let result = Arrays::new((Arc::clone(&self.dimensions), values));
 
-        if self.untracked { result } else { result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op)) }
+        if self.untracked {
+            result
+        } else {
+            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                let values = mul_values(&cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(), &x.values);
+                vec![Arrays::new((Arc::clone(&c[0].dimensions), Arc::new(values)))]
+            });
+
+            result.with_children(vec![self.clone()]).with_backward_op(Some(backward_op))
+        }
     }
 
     /// Sums the values of the array.
@@ -555,22 +585,13 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         if self.untracked && other.untracked {
             result
         } else {
-            let mut delta_count = 1;
             let (children, backward_op): (Vec<Array>, Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>) = if self.untracked {
-                // let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![Arrays::new((Arc::clone(&c[1].dimensions),
-                //     Arc::new(mul_values(&c[0].values, &x.values))))]);
                 let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[0].untracked() * x.untracked()]);
                 (vec![other.clone()], backward_op)
             } else if other.untracked {
-                // let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![Arrays::new((Arc::clone(&c[0].dimensions),
-                //     Arc::new(mul_values(&c[1].values, &x.values))))]);
                 let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[1].untracked() * x.untracked()]);
                 (vec![self.clone()], backward_op)
             } else {
-                delta_count = 2;
-                // let backward_op = Arc::new(|c: &Vec<Array>, x: &Array| vec![Arrays::new((Arc::clone(&c[0].dimensions),
-                //     Arc::new(mul_values(&c[1].values, &x.values)))), Arrays::new((Arc::clone(&c[1].dimensions),
-                //     Arc::new(mul_values(&c[0].values, &x.values))))]);
                 let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| vec![c[1].untracked() * x.untracked(), c[0].untracked() * x.untracked()]);
                 (vec![self.clone(), other.clone()], backward_op)
             };
@@ -961,7 +982,6 @@ mod tests {
     #[test]
     fn test_backward_repeat() {
         let a = arr![arr![1.0, 2.0, 3.0]];
-        // TODO implement test
         for _ in 0..5 {
             let mut b = &a * &a;
             b.backward(None);

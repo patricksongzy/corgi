@@ -1,7 +1,11 @@
 [package]
 name = "corgi"
+description = "Machine learning, and automatic differentation implementation for Rust"
+keywords = ["machine-learning", "neural-network", "deep-learning", "autograd", "tensor"]
 version = "0.1.0"
 authors = ["Patrick Song <32438365+patricksongzy@users.noreply.github.com>"]
+repository = "https://github.com/patricksongzy/corgi"
+license = "MIT"
 edition = "2018"
 
 [features]
