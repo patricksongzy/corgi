@@ -1,12 +1,10 @@
-mod numbers;
-#[macro_use]
-mod array;
-mod tensor;
+#![warn(missing_docs)]
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+//! Machine learning, and automatic differentiation implementation.
+
+pub mod numbers;
+#[macro_use]
+pub mod array;
+pub mod dense;
+pub mod layer;
+pub mod model;

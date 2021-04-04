@@ -1,7 +1,13 @@
 [package]
-name = "rust-nd"
+name = "corgi"
+description = "Machine learning, and automatic differentation implementation for Rust"
+keywords = ["machine-learning", "neural-network", "deep-learning", "autograd", "tensor"]
 version = "0.1.0"
 authors = ["Patrick Song <32438365+patricksongzy@users.noreply.github.com>"]
+readme = "README.md"
+homepage = "https://github.com/patricksongzy/corgi"
+repository = "https://github.com/patricksongzy/corgi"
+license = "MIT"
 edition = "2018"
 
 [features]
@@ -10,3 +16,4 @@ f32 = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+rand = "0.8.3"
