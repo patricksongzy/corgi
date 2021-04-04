@@ -482,6 +482,15 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     }
 }
 
+impl<'a, 'b> ops::Sub<&'b Array> for &'a Array {
+    type Output = Array;
+
+    #[inline]
+    fn sub(self, other: &Array) -> Self::Output {
+        self + &(-other)
+    }
+}
+
 impl<'a> ops::Neg for &'a Array {
     type Output = Array;
 
@@ -837,6 +846,19 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_sub() {
+        let a = arr![1.0];
+        let b = arr![3.0];
+
+        let mut result = &a - &b;
+        assert_eq!(result, arr![-2.0]);
+        result.backward(None);
+        assert_eq!(result.gradient(), arr![1.0]);
+        assert_eq!(b.gradient(), arr![-1.0]);
+        assert_eq!(a.gradient(), arr![1.0]);
+    }
+
+    #[test]
     fn test_backward_powf() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
         let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]];
@@ -943,7 +965,7 @@ mod tests {
 
         for _ in 0..10 {
             c = &c + &(&a * &b);
-            if c.values[0] > 50.0 {
+            if c[0] > 50.0 {
                 c = &c * &a;
             }
         }
