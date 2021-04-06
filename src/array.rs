@@ -45,9 +45,21 @@ pub trait Arrays {
     fn new(self) -> Array;
 }
 
-/// Implementation to construct `Array` structs by flattening other contained `Array` structs.
+/// Implementation to construct `Array` structs by flattening other contained `Array` structs, and keeping
+/// their dimensions.
+///
+/// # Examples
+///
+/// ```
+/// # #[macro_use]
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main () {
+/// let a = Arrays::new(vec![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]]);
+/// assert_eq!(a[vec![1, 2]], 6.0);
+/// # }
+/// ```
 impl Arrays for Vec<Array> {
-    /// Constructs a new `Array`, by flattening the contained `Array` structs, and keeping their dimensions.
     fn new(self) -> Array {
         // check if any of the contained array dimensions mismatch
         let is_dimensions_valid = match self.split_first() {
@@ -76,6 +88,17 @@ impl Arrays for Vec<Array> {
 }
 
 /// Implementation to construct `Array` structs by using `Vec<Float>` as the values, and by keeping flat dimensions.
+///
+/// # Examples
+///
+/// ```
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main () {
+/// let a = Arrays::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+/// assert_eq!(a[vec![5]], 6.0);
+/// # }
+/// ```
 impl Arrays for Vec<Float> {
     fn new(self) -> Array {
         Arrays::new((vec![self.len()], self))
@@ -83,6 +106,17 @@ impl Arrays for Vec<Float> {
 }
 
 /// Implementation to construct `Array` structs by using `Vec<usize>` as the dimensions, and filling values with zeros.
+///
+/// # Examples
+///
+/// ```
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main () {
+/// let a = Arrays::new(vec![3, 2, 3]);
+/// assert_eq!(a[vec![2, 1, 1]], 0.0);
+/// # }
+/// ```
 impl Arrays for Vec<usize> {
     fn new(self) -> Array {
         let product = self.iter().product();
@@ -92,6 +126,17 @@ impl Arrays for Vec<usize> {
 
 /// Implementation to construct `Array` structs by using `Vec<usize>` as the dimensions, and `Vec<Float>`
 /// as the values.
+///
+/// # Examples
+///
+/// ```
+/// # extern crate corgi;
+/// # use corgi::array::*;
+/// # fn main () {
+/// let a = Arrays::new((vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+/// assert_eq!(a[vec![1, 2]], 6.0);
+/// # }
+/// ```
 impl Arrays for (Vec<usize>, Vec<Float>) {
     fn new(self) -> Array {
         let (dimensions, values) = self;
@@ -101,6 +146,18 @@ impl Arrays for (Vec<usize>, Vec<Float>) {
 
 /// Implementation to construct `Array` structs by using `Arc<Vec<usize>>` as the dimensions, and `Arc<Vec<Float>>`
 /// as the values.
+///
+/// # Examples
+///
+/// ```
+/// # extern crate corgi;
+/// # use std::sync::Arc;
+/// # use corgi::array::*;
+/// # fn main () {
+/// let a = Arrays::new((Arc::new(vec![2, 3]), Arc::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])));
+/// assert_eq!(a[vec![1, 2]], 6.0);
+/// # }
+/// ```
 impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     fn new(self) -> Array {
         let (dimensions, values) = self;
@@ -120,10 +177,10 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 /// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>;
+pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Option<Array>> + Send + Sync>;
 
 // TODO add flag to not store gradient
-/// An n-dimensional differentiable Array.
+/// An n-dimensional differentiable Array. Stored in row-major order.
 ///
 /// # Examples
 /// ```
@@ -152,7 +209,7 @@ pub struct Array {
 }
 
 // TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
-/// Creates an `Array` with either:
+/// Creates an `Array`, which is row-major, with either:
 /// * Contained arrays:
 /// ```
 /// # #[macro_use]
@@ -190,14 +247,14 @@ macro_rules! arr {
 
 // TODO error handling
 impl Array {
-    /// Returns the dimensions of the array.
+    /// Returns a copy of the dimensions of the array.
     pub fn dimensions(&self) -> Vec<usize> {
         self.dimensions.to_vec()
     }
 
-    /// Returns the values of the array.
-    pub fn values(&self) -> Vec<Float> {
-        Arc::clone(&self.values).to_vec()
+    /// Returns a read-only reference to the values of the array in row-major order.
+    pub fn values(&self) -> &Vec<Float> {
+        &*self.values
     }
 
     /// Returns a copy of the gradient of the array.
@@ -218,15 +275,32 @@ impl Array {
         self.gradient.lock().unwrap()
     }
 
-    /// Prevents tracking of operations for the backward pass.
+    /// Prevents tracking of operations for the backward pass, meaning the backward pass will skip computation of
+    /// gradients for the current Array, and any children Arrays.
+    ///
+    /// This does not persist through threads, meaning calls in any `backward_op` will only temporarily set the
+    /// `Array` to untracked. This is recommended, unless higher order derivatives are needed.
+    ///
+    /// Note that there currently is no way to re-enable tracking, apart from cloning an array.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use]
+    /// # extern crate corgi;
+    /// # use corgi::array::*;
+    /// # fn main () {
+    /// let mut a = arr![1.0, 2.0, 3.0];
+    /// let b = arr![3.0, 2.0, 1.0];
+    /// // only the gradients for `b`, and `c` will be computed, and stored
+    /// let mut c = a.untracked() * &b;
+    /// c.backward(None);
+    /// assert_eq!(c.gradient(), arr![1.0, 1.0, 1.0]);
+    /// assert_eq!(b.gradient(), arr![1.0, 2.0, 3.0]);
+    /// # }
+    /// ```
     pub fn untracked(&mut self) -> &Array {
         self.untracked = true;
-        self
-    }
-
-    /// Tracks operations for the backward pass.
-    pub fn tracked(&mut self) -> &Array {
-        self.untracked = false;
         self
     }
 
@@ -399,26 +473,22 @@ impl Array {
                 }
             });
 
-            let (children, backward_op): (Vec<Array>, BackwardOp) = if a.untracked {
-                let backward_op =
-                    Arc::new(move |c: &mut Vec<Array>, x: &mut Array| vec![backward_b(c, x)]);
-
-                (vec![b.clone()], backward_op)
+            let backward_op: BackwardOp = if a.untracked {
+                Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![None, Some(backward_b(c, x))]
+                })
             } else if b.untracked {
-                let backward_op =
-                    Arc::new(move |c: &mut Vec<Array>, x: &mut Array| vec![backward_a(c, x)]);
-
-                (vec![a.clone()], backward_op)
+                Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![Some(backward_a(c, x)), None]
+                })
             } else {
-                let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                    vec![backward_a(c, x), backward_b(c, x)]
-                });
-
-                (vec![a.clone(), b.clone()], backward_op)
+                Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+                    vec![Some(backward_a(c, x)), Some(backward_b(c, x))]
+                })
             };
 
             result
-                .with_children(children)
+                .with_children(vec![a.clone(), b.clone()])
                 .with_backward_op(Some(backward_op))
         }
     }
@@ -427,22 +497,58 @@ impl Array {
     ///
     /// # Arguments
     ///
-    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
-    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    /// * `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
+    /// * `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
     pub fn matmul(a: (&Array, bool), b: (&Array, bool)) -> Array {
         Array::matmul_values(a, b)
     }
 
     /// Performs an operation on arrays.
-    pub fn op(
-        arrays: &[&Array],
-        children: &[Array],
-        op: ForwardOp,
-        backward_op: Option<BackwardOp>,
-    ) -> Array {
+    ///
+    /// # Arguments
+    ///
+    /// * `arrays` - The arrays to perform the operations on.
+    /// * `op` - The `ForwardOp`, which takes in the arrays, and outputs another Array.
+    /// * `backward_op` - The `BackwardOp`, which takes in the arrays, and the delta, and outputs a
+    /// new delta, with respect to each input. It is recommended that any array operations here are
+    /// untracked, unless interested in higher order derivatives.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use]
+    /// # extern crate corgi;
+    /// # use std::sync::Arc;
+    /// # use corgi::numbers::*;
+    /// # use corgi::array::*;
+    /// # fn main () {
+    /// let op: ForwardOp = Arc::new(|x: &[&Array]| {
+    ///     Arrays::new((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
+    /// });
+    ///
+    /// let op_clone = Arc::clone(&op);
+    /// let backward_op: BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+    ///     vec![
+    ///         Some(Array::op(&vec![c[1].untracked(), x.untracked()], Arc::clone(&op_clone), None)),
+    ///         Some(Array::op(&vec![c[0].untracked(), x.untracked()], Arc::clone(&op_clone), None)),
+    ///     ]
+    /// });
+    ///
+    /// let a = arr![1.0, 2.0, 3.0];
+    /// let b = arr![3.0, 2.0, 1.0];
+    ///
+    /// let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
+    /// assert_eq!(product, arr![3.0, 4.0, 3.0]);
+    /// product.backward(None);
+    /// assert_eq!(product.gradient(), arr![1.0, 1.0, 1.0]);
+    /// assert_eq!(b.gradient(), arr![1.0, 2.0, 3.0]);
+    /// assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
+    /// # }
+    /// ```
+    pub fn op(arrays: &[&Array], op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
         let result = op(arrays);
         result
-            .with_children(children.to_vec())
+            .with_children(arrays.iter().map(|v| (*v).clone()).collect())
             .with_backward_op(backward_op)
     }
 
@@ -460,7 +566,7 @@ impl Array {
             result
         } else {
             let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
-                vec![(c[0].untracked() * 2.0).untracked() * x.untracked()]
+                vec![Some((c[0].untracked() * 2.0).untracked() * x.untracked())]
             });
 
             result
@@ -489,10 +595,10 @@ impl Array {
                     &cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(),
                     &x.values,
                 );
-                vec![Arrays::new((
+                vec![Some(Arrays::new((
                     Arc::clone(&c[0].dimensions),
                     Arc::new(values),
-                ))]
+                )))]
             });
 
             result
@@ -509,8 +615,10 @@ impl Array {
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
-            child.consumer_count.fetch_add(1, Ordering::Relaxed);
-            child.propagate_consumers();
+            if !child.untracked {
+                child.consumer_count.fetch_add(1, Ordering::Relaxed);
+                child.propagate_consumers();
+            }
         }
     }
 
@@ -567,19 +675,21 @@ impl Array {
                 let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
-                    let mut tx_guard = children_guard[i].tx.lock().unwrap();
-                    match &*tx_guard {
-                        Some(x) => {
-                            x.send(delta).unwrap();
-                        }
-                        None => {
-                            let mut child = children_guard[i].clone();
+                    if let Some(delta) = delta {
+                        let mut tx_guard = children_guard[i].tx.lock().unwrap();
+                        match &*tx_guard {
+                            Some(x) => {
+                                x.send(delta).unwrap();
+                            }
+                            None => {
+                                let mut child = children_guard[i].clone();
 
-                            let (tx, rx) = channel();
-                            *tx_guard = Some(tx);
-                            handles.push(thread::spawn(move || {
-                                child.await_results(rx, delta);
-                            }));
+                                let (tx, rx) = channel();
+                                *tx_guard = Some(tx);
+                                handles.push(thread::spawn(move || {
+                                    child.await_results(rx, delta);
+                                }));
+                            }
                         }
                     }
                 }
@@ -708,21 +818,40 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
         if self.untracked && other.untracked {
             result
         } else {
-            let mut delta_count = 1;
-            let children = if self.untracked {
-                vec![other.clone()]
+            let backward_op: BackwardOp = if self.untracked {
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
+                    vec![
+                        None,
+                        Some(Arrays::new((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
+                    ]
+                })
             } else if other.untracked {
-                vec![self.clone()]
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
+                    vec![
+                        Some(Arrays::new((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
+                        None,
+                    ]
+                })
             } else {
-                delta_count = 2;
-                vec![self.clone(), other.clone()]
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
+                    vec![
+                        Some(Arrays::new((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values)
+                        )));
+                        2
+                    ]
+                })
             };
 
-            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
-                vec![Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values))); delta_count]
-            });
             result
-                .with_children(children)
+                .with_children(vec![self.clone(), other.clone()])
                 .with_backward_op(Some(backward_op))
         }
     }
@@ -750,7 +879,7 @@ impl<'a> ops::Neg for &'a Array {
             result
         } else {
             let backward_op =
-                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![-x.untracked()]);
+                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![Some(-x.untracked())]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(Some(backward_op))
@@ -771,8 +900,9 @@ impl<'a> ops::Mul<Float> for &'a Array {
         if self.untracked {
             result
         } else {
-            let backward_op =
-                Arc::new(move |_: &mut Vec<Array>, x: &mut Array| vec![x.untracked() * other]);
+            let backward_op = Arc::new(move |_: &mut Vec<Array>, x: &mut Array| {
+                vec![Some(x.untracked() * other)]
+            });
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(Some(backward_op))
@@ -794,28 +924,25 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         if self.untracked && other.untracked {
             result
         } else {
-            let (children, backward_op): (Vec<Array>, BackwardOp) = if self.untracked {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
-                    vec![c[0].untracked() * x.untracked()]
-                });
-                (vec![other.clone()], backward_op)
+            let backward_op: BackwardOp = if self.untracked {
+                Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                    vec![None, Some(c[0].untracked() * x.untracked())]
+                })
             } else if other.untracked {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
-                    vec![c[1].untracked() * x.untracked()]
-                });
-                (vec![self.clone()], backward_op)
+                Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                    vec![Some(c[1].untracked() * x.untracked()), None]
+                })
             } else {
-                let backward_op = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+                Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
                     vec![
-                        c[1].untracked() * x.untracked(),
-                        c[0].untracked() * x.untracked(),
+                        Some(c[1].untracked() * x.untracked()),
+                        Some(c[0].untracked() * x.untracked()),
                     ]
-                });
-                (vec![self.clone(), other.clone()], backward_op)
+                })
             };
 
             result
-                .with_children(children)
+                .with_children(vec![self.clone(), other.clone()])
                 .with_backward_op(Some(backward_op))
         }
     }
@@ -1069,7 +1196,13 @@ mod tests {
         let result =
             (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
         assert_eq!(result.len(), 2);
-        assert_eq!(result, vec![arr![2.0], arr![5.0]]);
+        assert_eq!(
+            result
+                .iter()
+                .map(|x| x.clone().unwrap())
+                .collect::<Vec<Array>>(),
+            vec![arr![2.0], arr![5.0]]
+        );
         assert!(!a.untracked);
         assert!(!b.untracked);
         assert!(!product.untracked);
@@ -1077,6 +1210,17 @@ mod tests {
 
     #[test]
     fn test_backward_untracked() {
+        let mut a = arr![5.0];
+        let b = arr![2.0];
+
+        let mut product = a.untracked() * &b;
+        product.backward(None);
+        assert_eq!(product.gradient(), arr![1.0]);
+        assert_eq!(b.gradient(), arr![5.0]);
+    }
+
+    #[test]
+    fn test_backward_untracked_both() {
         let mut a = arr![5.0];
         let mut b = arr![2.0];
 
