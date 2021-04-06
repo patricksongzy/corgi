@@ -28,7 +28,7 @@ assert_eq!(c.gradient(), arr![1.0]);
 assert_eq!(b.gradient(), arr![97650.0]);
 assert_eq!(a.gradient(), arr![232420.0]);
 ```
-* Fully-connected neural network:
+* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/dense.rs))
 ```rust
 struct Dense {
     weights: Array,
@@ -56,6 +56,10 @@ layer.biases = layer.biases.untracked() + (grad_biases.untracked() * -lr).untrac
 *layer.weights.gradient_mut() = None;
 *layer.biases.gradient_mut() = None;
 ```
+
+# Backward Pass
+* An informal UML sequence diagram (it's not entirely up to specs, but should give an overview of the process)
+[Informal UML sequence diagram](https://raw.github.com/patricksongzy/corgi/main/images/sequence.svg?sanitize=true)
 
 # Name
 * Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).
