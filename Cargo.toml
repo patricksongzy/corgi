@@ -2,6 +2,7 @@
 name = "corgi"
 description = "Machine learning, and automatic differentation implementation for Rust"
 keywords = ["machine-learning", "neural-network", "deep-learning", "autograd", "tensor"]
+categories = ["mathematics", "science"]
 version = "0.2.0"
 authors = ["Patrick Song <32438365+patricksongzy@users.noreply.github.com>"]
 readme = "README.md"
@@ -9,6 +10,12 @@ homepage = "https://github.com/patricksongzy/corgi"
 repository = "https://github.com/patricksongzy/corgi"
 license = "MIT"
 edition = "2018"
+include = [
+    "src/lib.rs",
+    "src/array.rs",
+    "src/numbers.rs",
+    "Cargo.toml",
+]
 
 [features]
 f32 = []
