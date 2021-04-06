@@ -1,5 +1,6 @@
 # Corgi
 * An automatic differentiation implementation in Rust.
+* https://crates.io/crates/corgi
 
 # Design
 * Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
