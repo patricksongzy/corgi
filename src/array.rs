@@ -1,5 +1,6 @@
 //! An n-dimensional array, with automatic differentation.
 //! # Examples
+//! See the README for more examples.
 //! ```
 //! # #[macro_use]
 //! # extern crate corgi;
@@ -32,7 +33,7 @@ use std::ops::Index;
 
 use std::fmt;
 
-use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -117,7 +118,7 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
 }
 
 /// The forward operation computes an operation with respect to inputs.
-pub type ForwardOp = Box<dyn Fn(&Vec<Array>) -> Array>;
+pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 /// The backward operation computes deltas with respect to inputs.
 pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>;
 
@@ -189,15 +190,17 @@ macro_rules! arr {
 
 // TODO error handling
 impl Array {
+    /// Returns the dimensions of the array.
     pub fn dimensions(&self) -> Vec<usize> {
         self.dimensions.to_vec()
     }
 
+    /// Returns the values of the array.
     pub fn values(&self) -> Vec<Float> {
         Arc::clone(&self.values).to_vec()
     }
 
-    /// Returns a copy of the gradient.
+    /// Returns a copy of the gradient of the array.
     ///
     /// # Panics
     ///
@@ -206,7 +209,7 @@ impl Array {
         self.gradient.lock().unwrap().clone().unwrap()
     }
 
-    /// Returns a guard for the gradient option.
+    /// Returns a guard for the gradient option of the array.
     ///
     /// # Panics
     ///
@@ -414,7 +417,9 @@ impl Array {
                 (vec![a.clone(), b.clone()], backward_op)
             };
 
-            result.with_children(children).with_backward_op(Some(backward_op))
+            result
+                .with_children(children)
+                .with_backward_op(Some(backward_op))
         }
     }
 
@@ -429,9 +434,16 @@ impl Array {
     }
 
     /// Performs an operation on arrays.
-    pub fn op(arrays: &Vec<Array>, children: &Vec<Array>, op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
+    pub fn op(
+        arrays: &[&Array],
+        children: &[Array],
+        op: ForwardOp,
+        backward_op: Option<BackwardOp>,
+    ) -> Array {
         let result = op(arrays);
-        result.with_children(children.iter().map(|c| c.clone()).collect()).with_backward_op(backward_op)
+        result
+            .with_children(children.to_vec())
+            .with_backward_op(backward_op)
     }
 
     /// Raises the array to the specified exponent.

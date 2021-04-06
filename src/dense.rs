@@ -1,6 +1,6 @@
-use crate::numbers::*;
 use crate::array::*;
 use crate::layer::Layer;
+use crate::numbers::*;
 
 struct Dense {
     weights: Array,
@@ -16,10 +16,14 @@ impl Dense {
         let mut rng = rand::thread_rng();
         let range = 1.0 / (input_size as Float).sqrt();
         Dense {
-            weights: Arrays::new((vec![output_size, input_size], (0..input_size * output_size)
-                .map(|_| rng.gen_range(-range..=range)).collect::<Vec<Float>>())),
+            weights: Arrays::new((
+                vec![output_size, input_size],
+                (0..input_size * output_size)
+                    .map(|_| rng.gen_range(-range..=range))
+                    .collect::<Vec<Float>>(),
+            )),
             biases: Arrays::new(vec![0.0; output_size]),
-            activation
+            activation,
         }
     }
 }
@@ -27,11 +31,14 @@ impl Dense {
 impl Layer for Dense {
     fn forward(&self, x: Array) -> Array {
         let y = &Array::matmul((&self.weights, false), (&x, false)) + &self.biases;
-        if self.activation { y.sigmoid() } else { y }
+        if self.activation {
+            y.sigmoid()
+        } else {
+            y
+        }
     }
 
-    fn update(&self, target: Array) {
-    }
+    fn update(&self, target: Array) {}
 }
 
 #[cfg(test)]
@@ -59,7 +66,10 @@ mod tests {
             let mut error = (&arr![target] - &r2).powf(2.0);
             let loss = error.sum();
 
-            println!("in: {}, out: {}, target: {}, loss: {}", x, r2[0], target, loss);
+            println!(
+                "in: {}, out: {}, target: {}, loss: {}",
+                x, r2[0], target, loss
+            );
 
             error.backward(None);
 

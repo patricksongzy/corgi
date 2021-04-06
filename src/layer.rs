@@ -1,5 +1,5 @@
-use crate::numbers::*;
 use crate::array::*;
+use crate::numbers::*;
 
 pub trait Layer {
     fn forward(&self, x: Array) -> Array;
