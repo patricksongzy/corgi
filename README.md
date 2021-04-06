@@ -66,15 +66,15 @@ let op: array::ForwardOp = Arc::new(|x: &[&Array]| {
 let op_clone = Arc::clone(&op);
 let backward_op: array::BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
     vec![
-	Array::op(&vec![c[1].untracked(), x.untracked()], &Vec::new(), Arc::clone(&op_clone), None),
-	Array::op(&vec![c[0].untracked(), x.untracked()], &Vec::new(), Arc::clone(&op_clone), None),
+	Some(Array::op(&vec![c[1].untracked(), x.untracked()], &Vec::new(), Arc::clone(&op_clone), None)),
+	Some(Array::op(&vec![c[0].untracked(), x.untracked()], &Vec::new(), Arc::clone(&op_clone), None)),
     ]
 });
 
 let a = arr![1.0, 2.0, 3.0];
 let b = arr![3.0, 2.0, 1.0];
 
-let mut product = Array::op(&vec![&a, &b], &vec![a.clone(), b.clone()], op, Some(backward_op));
+let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
 assert_eq!(product, arr![3.0, 4.0, 3.0]);
 
 product.backward(None);
