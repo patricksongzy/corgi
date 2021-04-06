@@ -1,6 +1,8 @@
 use crate::numbers::*;
 use crate::array::*;
 
-trait Layer {
-    fn forward(x: Array) -> Array;
+pub trait Layer {
+    fn forward(&self, x: Array) -> Array;
+
+    fn update(&self, target: Array);
 }
