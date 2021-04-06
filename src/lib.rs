@@ -8,3 +8,34 @@ pub mod array;
 pub mod dense;
 pub mod layer;
 pub mod model;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use numbers::*;
+    use array::*;
+
+    #[test]
+    fn test_op() {
+        let mul_values = Box::new(|a: &[Float], b: &[Float]| a.iter().zip(b).map(|(x, y)| x * y).collect::<Vec<Float>>());
+
+        let op: array::ForwardOp = Box::new(|x: &Vec<Array>| {
+            Arrays::new((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
+        });
+        
+        let backward_op: array::BackwardOp = Arc::new(|c: &mut Vec<Array>, x: &mut Array| {
+            vec![c[1].untracked() * x.untracked(), c[0].untracked() * x.untracked()]
+        });
+
+        let x = vec![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]];
+        let mut product = Array::op(&x, &vec![x[0].clone(), x[1].clone()], op, Some(backward_op));
+        assert_eq!(product, arr![3.0, 4.0, 3.0]);
+        product.backward(None);
+        assert_eq!(product.gradient(), arr![1.0, 1.0, 1.0]);
+        assert_eq!(x[1].gradient(), arr![1.0, 2.0, 3.0]);
+        assert_eq!(x[0].gradient(), arr![3.0, 2.0, 1.0]);
+    }
+}

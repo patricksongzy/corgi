@@ -1,5 +1,6 @@
 use crate::numbers::*;
 use crate::array::*;
+use crate::layer::Layer;
 
 struct Dense {
     weights: Array,
@@ -21,10 +22,15 @@ impl Dense {
             activation
         }
     }
+}
 
+impl Layer for Dense {
     fn forward(&self, x: Array) -> Array {
         let y = &Array::matmul((&self.weights, false), (&x, false)) + &self.biases;
         if self.activation { y.sigmoid() } else { y }
+    }
+
+    fn update(&self, target: Array) {
     }
 }
 

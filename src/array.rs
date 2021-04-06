@@ -3,7 +3,6 @@
 //! ```
 //! # #[macro_use]
 //! # extern crate corgi;
-//!
 //! use corgi::array::*;
 //!
 //! # fn main() {
@@ -33,7 +32,7 @@ use std::ops::Index;
 
 use std::fmt;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -117,11 +116,12 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     }
 }
 
+/// The forward operation computes an operation with respect to inputs.
+pub type ForwardOp = Box<dyn Fn(&Vec<Array>) -> Array>;
 /// The backward operation computes deltas with respect to inputs.
-type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>;
+pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Array> + Send + Sync>;
 
 // TODO add flag to not store gradient
-// TODO add poisoned flag, if Array has been modified
 /// An n-dimensional differentiable Array.
 ///
 /// # Examples
@@ -189,6 +189,14 @@ macro_rules! arr {
 
 // TODO error handling
 impl Array {
+    pub fn dimensions(&self) -> Vec<usize> {
+        self.dimensions.to_vec()
+    }
+
+    pub fn values(&self) -> Vec<Float> {
+        Arc::clone(&self.values).to_vec()
+    }
+
     /// Returns a copy of the gradient.
     ///
     /// # Panics
@@ -406,9 +414,7 @@ impl Array {
                 (vec![a.clone(), b.clone()], backward_op)
             };
 
-            result
-                .with_children(children)
-                .with_backward_op(Some(backward_op))
+            result.with_children(children).with_backward_op(Some(backward_op))
         }
     }
 
@@ -420,6 +426,12 @@ impl Array {
     /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
     pub fn matmul(a: (&Array, bool), b: (&Array, bool)) -> Array {
         Array::matmul_values(a, b)
+    }
+
+    /// Performs an operation on arrays.
+    pub fn op(arrays: &Vec<Array>, children: &Vec<Array>, op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
+        let result = op(arrays);
+        result.with_children(children.iter().map(|c| c.clone()).collect()).with_backward_op(backward_op)
     }
 
     /// Raises the array to the specified exponent.
@@ -680,6 +692,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
             Arc::clone(&self.dimensions),
             Arc::new(add_values(&self.values, &other.values)),
         ));
+
         if self.untracked && other.untracked {
             result
         } else {
@@ -742,6 +755,7 @@ impl<'a> ops::Mul<Float> for &'a Array {
             Arc::clone(&self.dimensions),
             Arc::new(scale_values(&self.values, other)),
         ));
+
         if self.untracked {
             result
         } else {
@@ -1192,9 +1206,9 @@ mod tests {
 
         let mut product = &a * &b;
         product.backward(None);
-        assert_eq!(product.consumer_count.load(Ordering::Relaxed), 0);
-        assert_eq!(b.consumer_count.load(Ordering::Relaxed), 0);
-        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 0);
+        assert_eq!(product.gradient(), arr![1.0]);
+        assert_eq!(b.gradient(), arr![5.0]);
+        assert_eq!(a.gradient(), arr![2.0]);
     }
 
     #[test]
