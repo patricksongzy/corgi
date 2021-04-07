@@ -1,10 +1,10 @@
 #[macro_use]
 extern crate corgi;
 
-use corgi::numbers::*;
 use corgi::array::*;
 use corgi::layer::Layer;
 use corgi::model::Model;
+use corgi::numbers::*;
 
 pub struct Dense {
     weights: Array,
@@ -49,8 +49,10 @@ impl Layer for Dense {
         let mut biases_gradient = self.biases.gradient();
         // update the parameters, using an untracked update since we are not interested in the
         // derivative of our update
-        self.weights = self.weights.untracked() + (weights_gradient.untracked() * -self.lr).untracked();
-        self.biases = self.biases.untracked() + (biases_gradient.untracked() * -self.lr).untracked();
+        self.weights =
+            self.weights.untracked() + (weights_gradient.untracked() * -self.lr).untracked();
+        self.biases =
+            self.biases.untracked() + (biases_gradient.untracked() * -self.lr).untracked();
         // clear the gradients for the next update
         *self.weights.gradient_mut() = None;
         *self.biases.gradient_mut() = None;
@@ -73,6 +75,9 @@ fn main() {
         let input = arr![arr![x]];
         let result = model.forward(input);
         let loss = model.backward(arr![target]);
-        println!("in: {}, out: {}, target: {}, loss: {}", x, result[0], target, loss);
+        println!(
+            "in: {}, out: {}, target: {}, loss: {}",
+            x, result[0], target, loss
+        );
     }
 }

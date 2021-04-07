@@ -49,8 +49,10 @@ impl Layer for Dense {
         let mut biases_gradient = self.biases.gradient();
         // update the parameters, using an untracked update since we are not interested in the
         // derivative of our update
-        self.weights = self.weights.untracked() + (weights_gradient.untracked() * -self.lr).untracked();
-        self.biases = self.biases.untracked() + (biases_gradient.untracked() * -self.lr).untracked();
+        self.weights =
+            self.weights.untracked() + (weights_gradient.untracked() * -self.lr).untracked();
+        self.biases =
+            self.biases.untracked() + (biases_gradient.untracked() * -self.lr).untracked();
         // clear the gradients for the next update
         *self.weights.gradient_mut() = None;
         *self.biases.gradient_mut() = None;

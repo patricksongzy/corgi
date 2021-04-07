@@ -1,8 +1,8 @@
 //! A supervised neural network model, which computes a forward pass, and updates parameters based on a target.
 
-use crate::numbers::*;
 use crate::array::*;
 use crate::layer::Layer;
+use crate::numbers::*;
 
 /// A neural network model, containing the layers of the model, and the outputs.
 pub struct Model {
