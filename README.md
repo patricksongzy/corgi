@@ -29,33 +29,32 @@ assert_eq!(c.gradient(), arr![1.0]);
 assert_eq!(b.gradient(), arr![97650.0]);
 assert_eq!(a.gradient(), arr![232420.0]);
 ```
-* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/dense.rs))
+* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/examples/custom.rs))
 ```rust
-struct Dense {
-    weights: Array,
-    biases: Array,
+use rand::Rng;
+let mut rng = rand::thread_rng();
+
+let lr = 0.01;
+let input_size = 1;
+let hidden_size = 16;
+let output_size = 1;
+let l1 = Dense::new(input_size, hidden_size, lr, true);
+let l2 = Dense::new(hidden_size, output_size, lr, false);
+let mut model = Model::new(vec![Box::new(l1), Box::new(l2)]);
+
+for _ in 0..1024 {
+    let x = rng.gen_range(-1.0..1.0);
+    let input = arr![arr![x]];
+    let target = x.exp();
+
+    let result = model.forward(input);
+    let loss = model.backward(arr![target]);
+
+    println!(
+	"in: {}, out: {}, target: {}, loss: {}",
+	x, result[0], target, loss
+    );
 }
-
-impl Dense {
-    forward(&self, x: Array) -> Array {
-        (&Array::matmul(&self.weights, &x, false, false) + &self.biases).sigmoid()
-    }
-}
-
-y = layer.forward(x);
-let mut error = (&target - &y).powf(2.0);
-let loss = error.sum();
-
-error.backward(None);
-
-let mut grad_weights = layer.weights.gradient();
-let mut grad_biases = layer.biases.gradient();
-
-layer.weights = layer.weights.untracked() + (grad_weights.untracked() * -lr).untracked();
-layer.biases = layer.biases.untracked() + (grad_biases.untracked() * -lr).untracked();
-
-*layer.weights.gradient_mut() = None;
-*layer.biases.gradient_mut() = None;
 ```
 * Custom operation (still needs some work)
 ```rust
