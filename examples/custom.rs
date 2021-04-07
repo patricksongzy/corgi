@@ -1,10 +1,11 @@
-//! A fully-connected neural network layer, which applies y = activation(Ax + b).
+#[macro_use]
+extern crate corgi;
 
-use crate::array::*;
-use crate::layer::Layer;
-use crate::numbers::*;
+use corgi::array::*;
+use corgi::layer::Layer;
+use corgi::model::Model;
+use corgi::numbers::*;
 
-/// A fully-connected neural network layer, storing the parameters of the layer.
 pub struct Dense {
     weights: Array,
     biases: Array,
@@ -13,7 +14,6 @@ pub struct Dense {
 }
 
 impl Dense {
-    /// Constructs a new dense layer, with a given input, and output size.
     pub fn new(input_size: usize, output_size: usize, lr: Float, activation: bool) -> Dense {
         // TODO this should not be in `dense.rs`
         // TODO He Initialisation
@@ -59,37 +59,25 @@ impl Layer for Dense {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_backward() {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-
-        let lr = 0.01;
-        let input_size = 1;
-        let hidden_size = 16;
-        let output_size = 1;
-
-        let mut l1 = Dense::new(input_size, hidden_size, lr, true);
-        let mut l2 = Dense::new(hidden_size, output_size, lr, false);
-
-        for _ in 0..8 {
-            let x = rng.gen_range(-1.0..1.0);
-            let input = arr![arr![x]];
-            let target = x.exp();
-
-            let r1 = l1.forward(input);
-            let r2 = l2.forward(r1);
-
-            let mut error = (&arr![target] - &r2).powf(2.0);
-
-            error.backward(None);
-
-            l1.update();
-            l2.update();
-        }
+fn main() {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let lr = 0.01;
+    let input_size = 1;
+    let hidden_size = 16;
+    let output_size = 1;
+    let l1 = Dense::new(input_size, hidden_size, lr, true);
+    let l2 = Dense::new(hidden_size, output_size, lr, false);
+    let mut model = Model::new(vec![Box::new(l1), Box::new(l2)]);
+    for _ in 0..1024 {
+        let x: Float = rng.gen_range(-1.0..1.0);
+        let target = x.exp();
+        let input = arr![arr![x]];
+        let result = model.forward(input);
+        let loss = model.backward(arr![target]);
+        println!(
+            "in: {}, out: {}, target: {}, loss: {}",
+            x, result[0], target, loss
+        );
     }
 }
