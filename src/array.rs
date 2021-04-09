@@ -180,7 +180,7 @@ pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &mut Array) -> Vec<Option<Array>> + Send + Sync>;
 
 // TODO add flag to not store gradient
-/// An n-dimensional differentiable Array. Stored in row-major order.
+/// An n-dimensional differentiable array. Stored in row-major order.
 ///
 /// # Examples
 /// ```
@@ -615,10 +615,8 @@ impl Array {
     /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
-            if !child.untracked {
-                child.consumer_count.fetch_add(1, Ordering::Relaxed);
-                child.propagate_consumers();
-            }
+            child.consumer_count.fetch_add(1, Ordering::SeqCst);
+            child.propagate_consumers();
         }
     }
 
@@ -628,24 +626,26 @@ impl Array {
     ///
     /// Panics if the current node has no consumers (is an end node).
     fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
-        if self.consumer_count.load(Ordering::Relaxed) == 0 {
+        let mut consumer_count = self.consumer_count.load(Ordering::SeqCst);
+        if consumer_count == 0 {
             self.backward(Some(delta));
             return;
         }
 
         let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
-        self.consumer_count.fetch_sub(1, Ordering::Relaxed);
+        consumer_count -= 1;
         let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
             acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
         };
 
-        while self.consumer_count.load(Ordering::Relaxed) > 0 {
+        while consumer_count > 0 {
             let received = rx.recv().unwrap();
-            self.consumer_count.fetch_sub(1, Ordering::Relaxed);
+            consumer_count -= 1;
             sum(&mut delta, &received.values);
         }
 
         *self.tx.lock().unwrap() = None;
+        self.consumer_count.store(0, Ordering::SeqCst);
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
         self.backward(Some(delta));
@@ -696,7 +696,9 @@ impl Array {
 
                 // wait for all threads to finish
                 for handle in handles {
-                    handle.join().unwrap();
+                    handle
+                        .join()
+                        .expect("error: could not join backward pass threads");
                 }
             }
             None => {
@@ -948,7 +950,6 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     }
 }
 
-// TODO test with array modification before backward call (poisoned)
 // TODO test f32
 // TODO test calling backward, doing more computation, then calling backward again
 // TODO test with multiple calls to backward
@@ -1174,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_propagate_consumers() {
+    fn test_propagate() {
         let a = arr![5.0];
         let b = arr![2.0];
 
@@ -1184,6 +1185,22 @@ mod tests {
         sum.propagate_consumers();
         assert_eq!(product.consumer_count.load(Ordering::Relaxed), 1);
         assert_eq!(b.consumer_count.load(Ordering::Relaxed), 1);
+        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_propagate_continue() {
+        let a = arr![1.0, 2.0];
+        let mut b = arr![5.0, 6.0];
+
+        b = &b * &a;
+        b.propagate_consumers();
+        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 1);
+        a.consumer_count.store(0, Ordering::Relaxed);
+        b.consumer_count.store(0, Ordering::Relaxed);
+
+        b = &b * &a;
+        b.propagate_consumers();
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
     }
 
@@ -1215,6 +1232,7 @@ mod tests {
 
         let mut product = a.untracked() * &b;
         product.backward(None);
+
         assert_eq!(product.gradient(), arr![1.0]);
         assert_eq!(b.gradient(), arr![5.0]);
     }
@@ -1455,7 +1473,23 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_poisoned() {
-        // TODO modify array before backward is called
+    fn test_backward_continue() {
+        // TODO race condition here? fails intermittently
+        let a = arr![1.0, 2.0];
+        let mut b = arr![5.0, 6.0];
+
+        b = &b * &a;
+        assert_eq!(b, arr![5.0, 12.0]);
+
+        b.backward(None);
+        assert_eq!(b.gradient(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient(), arr![5.0, 6.0]);
+
+        b = &b * &a;
+        assert_eq!(b, arr![5.0, 24.0]);
+
+        b.backward(None);
+        assert_eq!(b.gradient(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient(), arr![15.0, 30.0]);
     }
 }
