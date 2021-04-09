@@ -15,7 +15,12 @@ pub struct Dense {
 
 impl Dense {
     /// Constructs a new dense layer, with a given input, and output size.
-    pub fn new(input_size: usize, output_size: usize, initializer: Initializer, activation: Option<Activation>) -> Dense {
+    pub fn new(
+        input_size: usize,
+        output_size: usize,
+        initializer: Initializer,
+        activation: Option<Activation>,
+    ) -> Dense {
         // TODO this should not be in `dense.rs`
         // TODO He Initialisation
         Dense {
@@ -63,10 +68,14 @@ mod tests {
         let initializer = Arc::new(|x: Float| {
             let range = 1.0 / x.sqrt();
             rand::thread_rng().gen_range(-range..=range)
-
         });
         let sigmoid = Arc::new(|x: Array| x.sigmoid());
-        let mut l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid.clone()));
+        let mut l1 = Dense::new(
+            input_size,
+            hidden_size,
+            initializer.clone(),
+            Some(sigmoid.clone()),
+        );
         let mut l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
 
         for _ in 0..8 {
