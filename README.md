@@ -29,20 +29,27 @@ assert_eq!(c.gradient(), arr![1.0]);
 assert_eq!(b.gradient(), arr![97650.0]);
 assert_eq!(a.gradient(), arr![232420.0]);
 ```
-* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/examples/custom.rs))
+* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65))
 ```rust
 use rand::Rng;
 let mut rng = rand::thread_rng();
 
-let lr = 0.01;
+let learning_rate = 0.01;
 let input_size = 1;
 let hidden_size = 16;
 let output_size = 1;
-let l1 = Dense::new(input_size, hidden_size, lr, true);
-let l2 = Dense::new(hidden_size, output_size, lr, false);
-let mut model = Model::new(vec![Box::new(l1), Box::new(l2)]);
+let initializer = Arc::new(|x: Float| {
+    let range = 1.0 / x.sqrt();
+    rand::thread_rng().gen_range(-range..=range)
 
-for _ in 0..1024 {
+});
+let sigmoid = Arc::new(|x: Array| x.sigmoid());
+let gd = GradientDescent::new(learning_rate);
+let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
+let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
+let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd));
+
+for _ in 0..8 {
     let x = rng.gen_range(-1.0..1.0);
     let input = arr![arr![x]];
     let target = x.exp();

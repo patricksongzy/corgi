@@ -2,11 +2,11 @@
 
 use crate::array::*;
 
-/// A layer of a neural network.
+/// A layer of a neural network, which implements a forward, and backward pass.
 pub trait Layer {
-    /// Completes the forward pass of the layer.
+    /// Computes the forward pass of the layer.
     fn forward(&self, x: Array) -> Array;
 
-    /// Updates the parameters of the layer.
-    fn update(&mut self);
+    /// Retrieves the parameters of the layer.
+    fn parameters(&mut self) -> Vec<&mut Array>;
 }

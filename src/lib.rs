@@ -5,9 +5,13 @@
 pub mod numbers;
 #[macro_use]
 pub mod array;
-pub mod dense;
+pub mod activation;
+pub mod initializer;
 pub mod layer;
+pub mod layers;
 pub mod model;
+pub mod optimizer;
+pub mod optimizers;
 
 #[cfg(test)]
 mod tests {
