@@ -369,7 +369,7 @@ impl Array {
         let (b, b_transpose) = b;
 
         // TODO broadcasting
-        // TODO use BLAS, and take slice of floats instead
+        // TODO OpenCL
         if a.dimensions.len() != b.dimensions.len() {
             panic!(
                 "error: the dimensions {:?}, and {:?} are not compatible",

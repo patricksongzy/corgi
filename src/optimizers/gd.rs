@@ -17,12 +17,11 @@ impl GradientDescent {
 }
 
 impl Optimizer for GradientDescent {
-    // TODO it is possible that an incorrect parameters are passed in
     fn update(&self, parameters: Vec<&mut Array>) {
         for parameter in parameters {
             let mut gradient = parameter.gradient();
-            *parameter =
-                parameter.untracked() - (gradient.untracked() * self.learning_rate).untracked();
+            *parameter = parameter.untracked() - (gradient.untracked() * self.learning_rate).untracked();
+            *parameter.gradient_mut() = None;
         }
     }
 }
