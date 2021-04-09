@@ -9,6 +9,9 @@
 * Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
 * Graphs do note store consumers at the moment.
 
+# BLAS
+* The BLAS feature can be enabled, and requires CBLAS if used.
+
 # Examples
 * Dynamic computational graph:
 ```rust
