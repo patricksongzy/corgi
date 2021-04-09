@@ -1,11 +1,15 @@
 #![warn(missing_docs)]
 
-//! Machine learning, and automatic differentiation implementation.
+//! Machine learning, and dynamic automatic differentiation implementation.
+
+extern crate libc;
 
 pub mod numbers;
 #[macro_use]
 pub mod array;
 pub mod activation;
+#[cfg(feature = "blas")]
+pub mod blas;
 pub mod initializer;
 pub mod layer;
 pub mod layers;

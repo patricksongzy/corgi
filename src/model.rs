@@ -73,7 +73,6 @@ mod tests {
         let initializer = Arc::new(|x: Float| {
             let range = 1.0 / x.sqrt();
             rand::thread_rng().gen_range(-range..=range)
-
         });
         let sigmoid = Arc::new(|x: Array| x.sigmoid());
         let gd = GradientDescent::new(learning_rate);

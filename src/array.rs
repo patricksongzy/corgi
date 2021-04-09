@@ -26,6 +26,8 @@
 //! # }
 //! ```
 
+#[cfg(feature = "blas")]
+use crate::blas::matmul_blas;
 use crate::numbers::*;
 
 use std::ops;
@@ -316,24 +318,22 @@ impl Array {
         self
     }
 
-    /// Performs a matrix multiplication on two arrays, storing the result in `values`.
+    /// Performs a matrix multiplication on two matrices, storing the result in `values`.
     ///
     /// # Arguments
     ///
-    /// `values` - The result values.
+    /// `values` - The result values slice.
     /// `matmul_dimensions` - The dimensions to compute from: `(output_rows, output_cols, sum_len)`.
-    /// `offsets` - The offsets from where the matrices are stored in the arrays: `(offset, output_offset)`.
     /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
     /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    #[cfg(not(feature = "blas"))]
     fn matmul_flat(
-        values: &mut Vec<Float>,
+        values: &mut [Float],
         matmul_dimensions: (usize, usize, usize),
-        offsets: (usize, usize),
-        a: (&Array, bool),
-        b: (&Array, bool),
+        a: (&[Float], bool),
+        b: (&[Float], bool),
     ) {
         let (output_rows, output_cols, sum_len) = matmul_dimensions;
-        let (offset, output_offset) = offsets;
         let (a, a_transpose) = a;
         let (b, b_transpose) = b;
         for r in 0..output_rows {
@@ -342,21 +342,18 @@ impl Array {
 
                 for k in 0..sum_len {
                     // TODO cleanup
-                    sum += a[offset
-                        + if a_transpose {
-                            k * output_rows + r
-                        } else {
-                            r * sum_len + k
-                        }]
-                        * b[offset
-                            + if b_transpose {
-                                j * sum_len + k
-                            } else {
-                                k * output_cols + j
-                            }];
+                    sum += a[if a_transpose {
+                        k * output_rows + r
+                    } else {
+                        r * sum_len + k
+                    }] * b[if b_transpose {
+                        j * sum_len + k
+                    } else {
+                        k * output_cols + j
+                    }];
                 }
 
-                values[output_offset + r * output_cols + j] = sum;
+                values[r * output_cols + j] = sum;
             }
         }
     }
@@ -416,29 +413,41 @@ impl Array {
 
         let product = a.dimensions.iter().rev().skip(2).product();
         for _ in 0..product {
-            Array::matmul_flat(
-                &mut output_values,
+            let offset = flatten_indices(
+                indices
+                    .iter()
+                    .copied()
+                    .chain(vec![0; a.dimensions.len() - indices.len()])
+                    .collect(),
+                &a.dimensions,
+            );
+            let output_offset = flatten_indices(
+                indices
+                    .iter()
+                    .copied()
+                    .chain(vec![0; output_dimensions.len() - indices.len()])
+                    .collect(),
+                &output_dimensions,
+            );
+
+            let output_slice =
+                &mut output_values[output_offset..output_offset + output_rows * output_cols];
+            let a_slice = &a.values()[offset..offset + sum_len * output_rows];
+            let b_slice = &b.values()[offset..offset + sum_len * output_cols];
+
+            #[cfg(feature = "blas")]
+            matmul_blas(
+                output_slice,
                 (output_rows, output_cols, sum_len),
-                (
-                    flatten_indices(
-                        indices
-                            .iter()
-                            .copied()
-                            .chain(vec![0; a.dimensions.len() - indices.len()])
-                            .collect(),
-                        &a.dimensions,
-                    ),
-                    flatten_indices(
-                        indices
-                            .iter()
-                            .copied()
-                            .chain(vec![0; output_dimensions.len() - indices.len()])
-                            .collect(),
-                        &output_dimensions,
-                    ),
-                ),
-                (a, a_transpose),
-                (b, b_transpose),
+                (a_slice, a_transpose),
+                (b_slice, b_transpose),
+            );
+            #[cfg(not(feature = "blas"))]
+            Array::matmul_flat(
+                output_slice,
+                (output_rows, output_cols, sum_len),
+                (a_slice, a_transpose),
+                (b_slice, b_transpose),
             );
 
             for j in 0..indices.len() {
