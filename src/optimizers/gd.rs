@@ -20,7 +20,8 @@ impl Optimizer for GradientDescent {
     fn update(&self, parameters: Vec<&mut Array>) {
         for parameter in parameters {
             let mut gradient = parameter.gradient();
-            *parameter = parameter.untracked() - (gradient.untracked() * self.learning_rate).untracked();
+            *parameter =
+                parameter.untracked() - (gradient.untracked() * self.learning_rate).untracked();
             *parameter.gradient_mut() = None;
         }
     }

@@ -81,7 +81,9 @@ impl Arrays for Vec<Array> {
         // take ownership if possible, but clone otherwise
         let values = self
             .into_iter()
-            .map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
+            .map(|array| {
+                Arc::try_unwrap(Arc::clone(&array.values)).unwrap_or_else(|x| (*x).clone())
+            })
             .flatten()
             .collect::<Vec<Float>>();
 
@@ -307,7 +309,13 @@ impl Array {
     }
 
     /// Adds `Vec<Array>` as the children of a vector.
-    fn with_children(mut self, children: Vec<Array>) -> Array {
+    fn with_children(mut self, mut children: Vec<Array>) -> Array {
+        for child in &mut children {
+            if !child.untracked {
+                child.consumer_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         self.children = Arc::new(Mutex::new(children));
         self
     }
@@ -557,7 +565,16 @@ impl Array {
     pub fn op(arrays: &[&Array], op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
         let result = op(arrays);
         result
-            .with_children(arrays.iter().map(|v| (*v).clone()).collect())
+            .with_children(
+                arrays
+                    .iter()
+                    .map(|v| {
+                        let mut result = (*v).clone();
+                        result.untracked = v.untracked;
+                        result
+                    })
+                    .collect(),
+            )
             .with_backward_op(backward_op)
     }
 
@@ -621,27 +638,19 @@ impl Array {
         self.values.iter().sum()
     }
 
-    /// Prepares a graph for the backward pass by traversing the graph to update consumer counts.
-    fn propagate_consumers(&mut self) {
-        for child in &mut *self.children.lock().unwrap() {
-            child.consumer_count.fetch_add(1, Ordering::SeqCst);
-            child.propagate_consumers();
-        }
-    }
-
     /// Awaits for deltas from all consumers, then continues the backward pass.
     ///
     /// # Panics
     ///
     /// Panics if the current node has no consumers (is an end node).
     fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
-        let mut consumer_count = self.consumer_count.load(Ordering::SeqCst);
+        let mut consumer_count = self.consumer_count.load(Ordering::Relaxed);
         if consumer_count == 0 {
             self.backward(Some(delta));
             return;
         }
 
-        let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
+        let mut delta = Arc::try_unwrap(Arc::clone(&delta.values)).unwrap_or_else(|x| (*x).clone());
         consumer_count -= 1;
         let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
             acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
@@ -653,8 +662,8 @@ impl Array {
             sum(&mut delta, &received.values);
         }
 
+        // self.consumer_count.store(0, Ordering::Relaxed);
         *self.tx.lock().unwrap() = None;
-        self.consumer_count.store(0, Ordering::SeqCst);
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
         self.backward(Some(delta));
@@ -669,7 +678,7 @@ impl Array {
         let mut delta = match delta {
             Some(x) => x,
             None => {
-                self.propagate_consumers();
+                // self.propagate_consumers();
                 Arrays::new((
                     Arc::clone(&self.dimensions),
                     Arc::new(vec![1.0; self.values.len()]),
@@ -721,6 +730,17 @@ impl Array {
         match &mut *gradient_guard {
             Some(x) => *gradient_guard = Some(x.untracked() + delta.untracked()),
             None => *gradient_guard = Some(delta),
+        }
+    }
+}
+
+impl Drop for Array {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.children) <= 1 {
+            let mut guard = self.children.lock().unwrap();
+            for child in &mut *guard {
+                child.consumer_count.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -886,6 +906,7 @@ impl<'a> ops::Neg for &'a Array {
             Arc::clone(&self.dimensions),
             Arc::new(scale_values(&self.values, -1.0)),
         ));
+
         if self.untracked {
             result
         } else {
@@ -1189,9 +1210,8 @@ mod tests {
         let b = arr![2.0];
 
         let product = &a * &b;
-        let mut sum = &product + &a;
+        let _sum = &product + &a;
 
-        sum.propagate_consumers();
         assert_eq!(product.consumer_count.load(Ordering::Relaxed), 1);
         assert_eq!(b.consumer_count.load(Ordering::Relaxed), 1);
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
@@ -1200,16 +1220,12 @@ mod tests {
     #[test]
     fn test_propagate_continue() {
         let a = arr![1.0, 2.0];
-        let mut b = arr![5.0, 6.0];
+        let mut _b = arr![5.0, 6.0];
 
-        b = &b * &a;
-        b.propagate_consumers();
+        _b = &_b * &a;
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 1);
-        a.consumer_count.store(0, Ordering::Relaxed);
-        b.consumer_count.store(0, Ordering::Relaxed);
 
-        b = &b * &a;
-        b.propagate_consumers();
+        _b = &_b * &a;
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
     }
 
@@ -1219,8 +1235,10 @@ mod tests {
         let b = arr![2.0];
 
         let product = &a * &b;
-        let result =
-            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
+        let result = (*product.backward_op.clone().unwrap())(
+            &mut vec![a.clone(), b.clone()],
+            &mut arr![1.0],
+        );
         assert_eq!(result.len(), 2);
         assert_eq!(
             result
@@ -1483,7 +1501,6 @@ mod tests {
 
     #[test]
     fn test_backward_continue() {
-        // TODO race condition here? fails intermittently
         let a = arr![1.0, 2.0];
         let mut b = arr![5.0, 6.0];
 

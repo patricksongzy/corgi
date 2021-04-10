@@ -99,7 +99,7 @@ mod tests {
             l1.biases = l1.biases.untracked() - (gb1.untracked() * learning_rate).untracked();
             l2.weights = l2.weights.untracked() - (gw2.untracked() * learning_rate).untracked();
             l2.biases = l2.biases.untracked() - (gb2.untracked() * learning_rate).untracked();
-            
+
             *l1.weights.gradient_mut() = None;
             *l1.biases.gradient_mut() = None;
             *l2.weights.gradient_mut() = None;
