@@ -1,18 +1,25 @@
-# Corgi
-* An automatic differentiation implementation in Rust.
-* https://crates.io/crates/corgi
+<h1 align="center">Corgi</h1>
+<p align="center">A neural network, and tensor dynamic automatic differentiation implementation for Rust.</p>
+<p align="center">
+    <a href="https://github.com/patricksongzy/corgi/actions">
+        <img alt="Build: Github Workflow" src="https://img.shields.io/github/workflow/status/patricksongzy/corgi/Rust"></img>
+    </a>
+    <a href="https://crates.io/crates/corgi">
+        <img alt="Download: crates.io" src="https://img.shields.io/crates/v/corgi"></img>
+    </a>
+    <a href="https://docs.rs/corgi">
+        <img alt="Documentation: docs.rs" src="https://docs.rs/corgi/badge.svg"></img>
+    </a>
+    <a href="https://github.com/patricksongzy/corgi/blob/main/LICENSE">
+        <img alt="Licence: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></img>
+    </a>
+</p>
+<hr>
 
-# Design
-* Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
-* Dynamic-as-possible computational graph.
-* Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
-* Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
-* Graphs do note store consumers at the moment.
-
-# BLAS
+## BLAS
 * The BLAS feature can be enabled, and requires CBLAS if used.
 
-# Examples
+## Examples
 * Dynamic computational graph:
 ```rust
 let a = arr![5.0];
@@ -92,14 +99,24 @@ assert_eq!(b.gradient(), arr![1.0, 2.0, 3.0]);
 assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
 ```
 
-# Backward Pass
+## Design
+* Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
+* Dynamic-as-possible computational graph.
+* Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
+* Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
+* Graphs do note store consumers at the moment.
+
+## Backward Pass
 * An informal UML sequence diagram (it's not entirely up to specs, but should give an overview of the process)
 ![Informal UML sequence diagram](https://raw.githubusercontent.com/patricksongzy/corgi/main/images/sequence.svg?sanitize=true)
 
-# Name
+## Name
 * Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).
 But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' sounded awkward, such as 'cogi', for 'cog-intelligence',
 so the name Corgi was chosen.
 
-# Licence
+## Acknowledgements
+* Shields are from [shields.io](https://shields.io)
+
+## Licence
 * MIT
