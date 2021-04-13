@@ -2,6 +2,7 @@
 
 //! Machine learning, and dynamic automatic differentiation implementation.
 
+#[cfg(feature = "blas")]
 extern crate libc;
 
 pub mod numbers;
@@ -40,18 +41,10 @@ mod tests {
         });
 
         let op_clone = Arc::clone(&op);
-        let backward_op: array::BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &mut Array| {
+        let backward_op: array::BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &Array| {
             vec![
-                Some(Array::op(
-                    &vec![c[1].untracked(), x.untracked()],
-                    Arc::clone(&op_clone),
-                    None,
-                )),
-                Some(Array::op(
-                    &vec![c[0].untracked(), x.untracked()],
-                    Arc::clone(&op_clone),
-                    None,
-                )),
+                Some(Array::op(&vec![&c[1], x], Arc::clone(&op_clone), None)),
+                Some(Array::op(&vec![&c[0], x], Arc::clone(&op_clone), None)),
             ]
         });
 

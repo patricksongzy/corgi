@@ -29,8 +29,9 @@ impl Dense {
                 (0..input_size * output_size)
                     .map(|_| (*initializer)(input_size as Float))
                     .collect::<Vec<Float>>(),
-            )),
-            biases: Arrays::new(vec![0.0; output_size]),
+            ))
+            .tracked(),
+            biases: Arrays::new(vec![0.0; output_size]).tracked(),
             activation,
         }
     }
@@ -90,15 +91,25 @@ mod tests {
 
             error.backward(None);
 
-            let mut gw1 = l1.weights.gradient();
-            let mut gb1 = l1.biases.gradient();
-            let mut gw2 = l2.weights.gradient();
-            let mut gb2 = l2.biases.gradient();
+            let gw1 = l1.weights.gradient();
+            let gb1 = l1.biases.gradient();
+            let gw2 = l2.weights.gradient();
+            let gb2 = l2.biases.gradient();
 
-            l1.weights = l1.weights.untracked() - (gw1.untracked() * learning_rate).untracked();
-            l1.biases = l1.biases.untracked() - (gb1.untracked() * learning_rate).untracked();
-            l2.weights = l2.weights.untracked() - (gw2.untracked() * learning_rate).untracked();
-            l2.biases = l2.biases.untracked() - (gb2.untracked() * learning_rate).untracked();
+            l1.weights = l1.weights.untracked();
+            l1.biases = l1.biases.untracked();
+            l2.weights = l2.weights.untracked();
+            l2.biases = l2.biases.untracked();
+
+            l1.weights = &l1.weights - &(&gw1 * learning_rate);
+            l1.biases = &l1.biases - &(&gb1 * learning_rate);
+            l2.weights = &l2.weights - &(&gw2 * learning_rate);
+            l2.biases = &l2.biases - &(&gb2 * learning_rate);
+
+            l1.weights = l1.weights.tracked();
+            l1.biases = l1.biases.tracked();
+            l2.weights = l2.weights.tracked();
+            l2.biases = l2.biases.tracked();
 
             *l1.weights.gradient_mut() = None;
             *l1.biases.gradient_mut() = None;
