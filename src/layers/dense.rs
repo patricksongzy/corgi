@@ -27,8 +27,15 @@ impl Dense {
                 (0..input_size * output_size)
                     .map(|_| (*initializer)(input_size as Float))
                     .collect::<Vec<Float>>(),
-            )).tracked(),
-            biases: Arrays::new((vec![output_size], (0..output_size).map(|_| (*initializer)(input_size as Float)).collect::<Vec<Float>>())).tracked(),
+            ))
+            .tracked(),
+            biases: Arrays::new((
+                vec![output_size],
+                (0..output_size)
+                    .map(|_| (*initializer)(input_size as Float))
+                    .collect::<Vec<Float>>(),
+            ))
+            .tracked(),
             activation,
         }
     }
