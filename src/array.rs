@@ -178,6 +178,8 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     }
 }
 
+/// The sliced operation computes an operation with respect to slices on a mutable output slice.
+type SlicedOp = Box<dyn Fn(&mut [Float], Vec<&[Float]>)>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 /// The backward operation computes deltas with respect to inputs.
@@ -256,7 +258,7 @@ impl Array {
         self.dimensions.to_vec()
     }
 
-    /// Returns a read-only reference to the values of the array in row-major order.
+    /// Returns an immutable reference to the values of the array in row-major order.
     pub fn values(&self) -> &Vec<Float> {
         &*self.values
     }
@@ -388,23 +390,66 @@ impl Array {
         for r in 0..output_rows {
             for j in 0..output_cols {
                 let mut sum = 0.0;
-
                 for k in 0..sum_len {
-                    // TODO cleanup
-                    sum += a[if a_transpose {
+                    let a_index = if a_transpose {
                         k * output_rows + r
                     } else {
                         r * sum_len + k
-                    }] * b[if b_transpose {
+                    };
+
+                    let b_index = if b_transpose {
                         j * sum_len + k
                     } else {
                         k * output_cols + j
-                    }];
+                    };
+
+                    sum += a[a_index] * b[b_index];
                 }
 
                 values[r * output_cols + j] = sum;
             }
         }
+    }
+
+    fn sliced_op(arrays: Vec<&Array>, op: &SlicedOp, input_dimensions: &Vec<usize>, output_dimensions: &Vec<usize>, skip_size: usize) -> Vec<Float> {
+        // total length of the leading values
+        let leading_length = input_dimensions.iter().rev().skip(skip_size).product();
+        // total length of the output
+        let output_length = output_dimensions.iter().product();
+
+        // count of leading dimensions
+        let leading_count = input_dimensions.len().saturating_sub(skip_size);
+        // total length of the slicesslice
+        let group_lengths: Vec<usize> = arrays.iter().map(|a| a.dimensions.iter().rev().take(skip_size).product()).collect();
+        let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
+
+        let mut indices = vec![0; leading_count];
+        let mut output_values = vec![0.0; output_length];
+        for _ in 0..leading_length {
+            // add zero indices to the skipped dimensions
+            let chained = indices.iter().copied().chain(vec![0; input_dimensions.len() - indices.len()]).collect();
+            let slices = arrays.iter().enumerate().map(|(i, a)| {
+                let offset = flatten_indices(&chained, &a.dimensions);
+                &a.values[offset..offset + group_lengths[i]]
+            }).collect();
+
+            let output_offset = flatten_indices(&chained, &output_dimensions);
+            let output_slice = &mut output_values[output_offset..output_offset + output_group_length];
+
+            op(output_slice, slices);
+
+            for j in 0..indices.len() {
+                let current = indices.len() - j - 1;
+                if indices[current] == input_dimensions[current] - 1 {
+                    indices[current] = 0;
+                } else {
+                    indices[current] += 1;
+                    break;
+                }
+            }
+        }
+
+        output_values
     }
 
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
@@ -417,18 +462,10 @@ impl Array {
         let (a, a_transpose) = a;
         let (b, b_transpose) = b;
 
-        // TODO broadcasting
+        let input_dimensions = if a.dimensions.len() >= b.dimensions.len() { &a.dimensions } else { &b.dimensions };
+
+        // TODO broadcasting - special case with single dimensions tensor
         // TODO OpenCL
-        if a.dimensions.len() != b.dimensions.len() {
-            panic!(
-                "error: the dimensions {:?}, and {:?} are not compatible",
-                a.dimensions, b.dimensions
-            );
-        }
-
-        let mut indices = vec![0; a.dimensions.len().saturating_sub(2)];
-
-        // TODO clean up
         let output_rows = if a.dimensions.len() < 2 {
             1
         } else {
@@ -439,95 +476,78 @@ impl Array {
         } else {
             b.dimensions[b.dimensions.len() - if b_transpose { 2 } else { 1 }]
         };
-        let sum_len = if a.dimensions.len() < 2 && a_transpose {
-            1
-        } else {
-            a.dimensions[a.dimensions.len() - if a_transpose { 2 } else { 1 }]
+        let sum_len =  {
+            let a_index = if a_transpose { 2 } else { 1 };
+            let b_index  = if b_transpose { 1 } else { 2 };
+
+            if a.dimensions.len() < a_index {
+                if b.dimensions.len() >= b_index {
+                    b.dimensions[b.dimensions.len() - b_index]
+                } else {
+                    1
+                }
+            } else {
+                let sum_len = a.dimensions[a.dimensions.len() - a_index];
+                if b.dimensions.len() >= b_index && sum_len != b.dimensions[b.dimensions.len() - b_index] {
+                    panic!(
+                        "error: the dimensions {:?}, and {:?} are not compatible",
+                        a.dimensions, b.dimensions
+                    );
+                } else {
+                    sum_len
+                }
+            }
         };
 
-        let output_dimensions: Vec<usize> = a
-            .dimensions
-            .iter()
-            .copied()
-            .take(indices.len())
-            .chain(if a.dimensions.len() < 2 {
+        let leading_count = input_dimensions.len().saturating_sub(2);
+        let output_dimensions: Vec<usize> = input_dimensions.iter().copied().take(leading_count)
+            .chain(if input_dimensions.len() < 2 {
                 vec![output_cols]
             } else {
                 vec![output_rows, output_cols]
-            })
-            .collect();
+            }).collect();
 
-        let output_length = output_dimensions.iter().product();
-        let mut output_values = vec![0.0; output_length];
-
-        let product = a.dimensions.iter().rev().skip(2).product();
-        for _ in 0..product {
-            let offset = flatten_indices(
-                indices
-                    .iter()
-                    .copied()
-                    .chain(vec![0; a.dimensions.len() - indices.len()])
-                    .collect(),
-                &a.dimensions,
-            );
-            let output_offset = flatten_indices(
-                indices
-                    .iter()
-                    .copied()
-                    .chain(vec![0; output_dimensions.len() - indices.len()])
-                    .collect(),
-                &output_dimensions,
-            );
-
-            let output_slice =
-                &mut output_values[output_offset..output_offset + output_rows * output_cols];
-            let a_slice = &a.values()[offset..offset + sum_len * output_rows];
-            let b_slice = &b.values()[offset..offset + sum_len * output_cols];
-
+        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
             #[cfg(feature = "blas")]
             matmul_blas(
                 output_slice,
                 (output_rows, output_cols, sum_len),
-                (a_slice, a_transpose),
-                (b_slice, b_transpose),
+                (arrays[0], a_transpose),
+                (arrays[1], b_transpose),
             );
             #[cfg(not(feature = "blas"))]
             Array::matmul_flat(
                 output_slice,
                 (output_rows, output_cols, sum_len),
-                (a_slice, a_transpose),
-                (b_slice, b_transpose),
+                (arrays[0], a_transpose),
+                (arrays[1], b_transpose),
             );
+        });
 
-            for j in 0..indices.len() {
-                let current = indices.len() - j - 1;
-                if indices[current] == a.dimensions[current] - 1 {
-                    indices[current] = 0;
-                } else {
-                    indices[current] += 1;
-                    break;
-                }
-            }
-        }
-
+        let output_values = Array::sliced_op(vec![a, b], &op, &input_dimensions, &output_dimensions, 2);
         let result = Arrays::new((output_dimensions, output_values));
+
         if !a.tracked && !b.tracked {
             result
         } else {
             let backward_a = Box::new(move |c: &mut Vec<Array>, x: &Array| {
-                if a_transpose {
+                let result = if a_transpose {
                     Array::matmul_values((&c[1], b_transpose), (x, true))
                 } else {
                     Array::matmul_values((x, false), (&c[1], !b_transpose))
-                }
+                };
+
+                result.flatten_to(Arc::clone(&c[0].dimensions))
             });
 
             let backward_b = Box::new(move |c: &mut Vec<Array>, x: &Array| {
-                if b_transpose {
+                let result = if b_transpose {
                     Array::matmul_values((x, true), (&c[0], a_transpose))
                 } else {
                     Array::matmul_values((&c[0], !a_transpose), (x, false))
-                }
+                };
+
+                result.flatten_to(Arc::clone(&c[1].dimensions))
             });
 
             let backward_op: BackwardOp = if a.tracked && b.tracked {
@@ -546,6 +566,18 @@ impl Array {
         }
     }
 
+    fn flatten_to(self, dimensions: Arc<Vec<usize>>) -> Array {
+        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+            for i in 0..output_slice.len() {
+                output_slice[i] += arrays[0][i];
+            }
+        });
+
+        let output_values = Array::sliced_op(vec![&self], &op, &self.dimensions, &*dimensions, 0);
+
+        Arrays::new((dimensions, Arc::new(output_values)))
+    }
+
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
     ///
     /// # Arguments
@@ -553,6 +585,8 @@ impl Array {
     /// * `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
     /// * `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
     pub fn matmul(a: (&Array, bool), b: (&Array, bool)) -> Array {
+        // println!("{:?}, {:?}", a.0.dimensions, b.0.dimensions);
+        // println!("{:?}, {:?}", a.0.values, b.0.values);
         Array::matmul_values(a, b)
     }
 
@@ -817,7 +851,7 @@ impl Index<usize> for Array {
 
     fn index(&self, index: usize) -> &Self::Output {
         if index >= self.values.len() {
-            panic!("error: invalid index supplied");
+            panic!("error: the index {} is not compatible with the dimensions {:?}", index, self.dimensions);
         }
 
         &self.values[index]
@@ -828,35 +862,32 @@ impl Index<Vec<usize>> for Array {
     type Output = Float;
 
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
-        &self.values[flatten_indices(indices, &*self.dimensions)]
+        &self.values[flatten_indices(&indices, &*self.dimensions)]
     }
 }
 
 /// Converts indices by dimension to a single flattened index.
-fn flatten_indices(indices: Vec<usize>, dimensions: &[usize]) -> usize {
-    let is_indices_valid = indices.len() == dimensions.len()
+fn flatten_indices(indices: &Vec<usize>, dimensions: &[usize]) -> usize {
+    let is_indices_valid = indices.len() >= dimensions.len()
         && indices
             .iter()
-            .zip(dimensions)
+            .rev()
+            .zip(dimensions.iter().rev())
             .filter(|&(i, d)| *i >= *d)
             .peekable()
             .peek()
             .is_none();
 
     if !is_indices_valid {
-        panic!("error: invalid indices supplied")
+        panic!("error: the indices {:?} are not compatible with the dimensions {:?}", indices, dimensions)
     }
 
-    let mut iter = indices.iter();
+    let mut iter = indices.iter().skip(indices.len() - dimensions.len());
     let first = iter.next().unwrap();
 
     // dimensions will always have at least one element
     iter.zip(dimensions.iter().skip(1))
         .fold(*first, |acc, (i, d)| acc * d + i)
-}
-
-fn add_values(a: &[Float], b: &[Float]) -> Vec<Float> {
-    a.iter().zip(b).map(|(x, y)| x + y).collect::<Vec<Float>>()
 }
 
 fn scale_values(a: &[Float], s: Float) -> Vec<Float> {
@@ -872,43 +903,50 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
 
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
-        // TODO broadcasting, checking for valid dimensions
-        let result = Arrays::new((
-            Arc::clone(&self.dimensions),
-            Arc::new(add_values(&self.values, &other.values)),
-        ));
+        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+            for i in 0..output_slice.len() {
+                output_slice[i] = arrays[0][i] + arrays[1][i];
+            }
+        });
+
+        let dimensions = if self.dimensions.len() >= other.dimensions.len() { &self.dimensions } else { &other.dimensions };
+        let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
+        let result = Arrays::new((Arc::clone(dimensions), Arc::new(output_values)));
 
         if !self.tracked && !other.tracked {
             result
         } else {
             let backward_op: BackwardOp = if self.tracked && other.tracked {
-                Arc::new(move |_: &mut Vec<Array>, x: &Array| {
+                Arc::new(move |c: &mut Vec<Array>, x: &Array| {
                     vec![
                         Some(Arrays::new((
                             Arc::clone(&x.dimensions),
                             Arc::clone(&x.values)
-                        )));
-                        2
+                        )).flatten_to(Arc::clone(&c[0].dimensions))),
+                        Some(Arrays::new((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values)
+                        )).flatten_to(Arc::clone(&c[1].dimensions))),
                     ]
                 })
             } else if self.tracked {
-                Arc::new(move |_: &mut Vec<Array>, x: &Array| {
+                Arc::new(move |c: &mut Vec<Array>, x: &Array| {
                     vec![
                         Some(Arrays::new((
                             Arc::clone(&x.dimensions),
                             Arc::clone(&x.values),
-                        ))),
+                        )).flatten_to(Arc::clone(&c[0].dimensions))),
                         None,
                     ]
                 })
             } else {
-                Arc::new(move |_: &mut Vec<Array>, x: &Array| {
+                Arc::new(move |c: &mut Vec<Array>, x: &Array| {
                     vec![
                         None,
                         Some(Arrays::new((
                             Arc::clone(&x.dimensions),
                             Arc::clone(&x.values),
-                        ))),
+                        )).flatten_to(Arc::clone(&c[1].dimensions))),
                     ]
                 })
             };
@@ -976,21 +1014,26 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
-        // TODO broadcasting, checking for valid dimensions
-        let result = Arrays::new((
-            Arc::clone(&self.dimensions),
-            Arc::new(mul_values(&self.values, &other.values)),
-        ));
+        // TODO checking for valid dimensions
+        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+            for i in 0..output_slice.len() {
+                output_slice[i] = arrays[0][i] * arrays[1][i];
+            }
+        });
+
+        let dimensions = if self.dimensions.len() >= other.dimensions.len() { &self.dimensions } else { &other.dimensions };
+        let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
+        let result = Arrays::new((Arc::clone(dimensions), Arc::new(output_values)));
 
         if !self.tracked && !other.tracked {
             result
         } else {
             let backward_op: BackwardOp = if self.tracked && other.tracked {
-                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![Some(&c[1] * x), Some(&c[0] * x)])
+                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![Some((&c[1] * x).flatten_to(Arc::clone(&c[0].dimensions))), Some((&c[0] * x).flatten_to(Arc::clone(&c[1].dimensions)))])
             } else if self.tracked {
-                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![Some(&c[1] * x), None])
+                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![Some((&c[1] * x).flatten_to(Arc::clone(&c[0].dimensions))), None])
             } else {
-                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![None, Some(&c[0] * x)])
+                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![None, Some((&c[0] * x).flatten_to(Arc::clone(&c[1].dimensions)))])
             };
 
             result
@@ -1104,6 +1147,19 @@ mod tests {
     }
 
     #[test]
+    fn test_mul_broadcast() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]].tracked();
+        let b = arr![1.0, 2.0, 3.0].tracked();
+        
+        let mut result = &a * &b;
+        assert_eq!(result, arr![arr![1.0, 4.0, 9.0], arr![3.0, 4.0, 3.0]]);
+
+        result.backward(None);
+        assert_eq!(b.gradient(), arr![4.0, 4.0, 4.0]);
+        assert_eq!(a.gradient(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+    }
+
+    #[test]
     fn test_matmul() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]].tracked();
         let b = arr![arr![5.0, 3.0], arr![2.0, 6.0], arr![1.0, 2.0]].tracked();
@@ -1140,6 +1196,34 @@ mod tests {
             a.gradient(),
             arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]
         );
+    }
+
+    #[test]
+    fn test_matmul_broadcast() {
+        let a = arr![arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]],
+            arr![arr![4.0, 5.0, 6.0], arr![7.0, 8.0, 9.0]]].tracked();
+        let b = arr![arr![1.0, 2.0, 3.0]].tracked();
+
+        let mut result = Array::matmul((&a, false), (&b, true));
+        assert_eq!(result, arr![arr![arr![14.0], arr![10.0]], arr![arr![32.0], arr![50.0]]]);
+
+        result.backward(None);
+        assert_eq!(b.gradient(), arr![arr![15.0, 17.0, 19.0]]);
+        assert_eq!(a.gradient(), arr![arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]],
+            arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]] );
+    }
+
+    #[test]
+    fn test_matmul_broadcast_dense() {
+        let a = arr![arr![arr![1.0], arr![2.0]], arr![arr![2.0], arr![1.0]]].tracked();
+        let b = arr![arr![1.0], arr![2.0]].tracked();
+
+        let mut result = Array::matmul((&a, false), (&b, true));
+        assert_eq!(result, arr![arr![arr![1.0, 2.0], arr![2.0, 4.0]], arr![arr![2.0, 4.0], arr![1.0, 2.0]]]);
+
+        result.backward(None);
+        assert_eq!(b.gradient(), arr![arr![6.0], arr![6.0]]);
+        assert_eq!(a.gradient(), arr![arr![arr![3.0], arr![3.0]], arr![arr![3.0], arr![3.0]]]);
     }
 
     #[test]
@@ -1405,10 +1489,13 @@ mod tests {
     #[test]
     fn test_backward_repeat() {
         let a = arr![arr![1.0, 2.0, 3.0]].tracked();
+
         for _ in 0..5 {
             let mut b = &a * &a;
             b.backward(None);
         }
+
+        assert_eq!(a.gradient(), arr![arr![10.0, 20.0, 30.0]]);
     }
 
     #[test]

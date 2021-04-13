@@ -22,18 +22,29 @@
 ## Examples
 * Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
 ```rust
+let initializer = Arc::new(|x: Float| {
+    let range = 1.0 / x.sqrt();
+    rand::thread_rng().gen_range(-range..=range)
+});
+let sigmoid = Arc::new(|x: Array| x.sigmoid());
+let gd = GradientDescent::new(learning_rate);
+let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
+let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
+let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd));
+
 for _ in 0..iterations {
-    let x = rng.gen_range(-1.0..1.0);
-    let input = arr![arr![x]];
-    let target = x.exp();
+    let mut input = vec![0.0; input_size * batch_size];
+    let mut target = vec![0.0; output_size * batch_size];
 
-    let result = model.forward(input);
-    let loss = model.backward(arr![target]);
+    // initialize inputs, and targets
 
-    println!(
-	"in: {}, out: {}, target: {}, loss: {}",
-	x, result[0], target, loss
-    );
+    let input = Arrays::new((vec![batch_size, input_size], input));
+    let target = Arrays::new((vec![batch_size, output_size], target));
+
+    let result = model.forward(input.clone());
+    let loss = model.backward(target.clone());
+
+    println!("loss: {}", loss);
 }
 ```
 * Dynamic computational graph:

@@ -67,9 +67,10 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let learning_rate = 0.01;
-        let input_size = 1;
+        let batch_size = 8;
+        let input_size = 2;
         let hidden_size = 16;
-        let output_size = 1;
+        let output_size = 2;
         let initializer = Arc::new(|x: Float| {
             let range = 1.0 / x.sqrt();
             rand::thread_rng().gen_range(-range..=range)
@@ -81,17 +82,24 @@ mod tests {
         let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd));
 
         for _ in 0..8 {
-            let x = rng.gen_range(-1.0..1.0);
-            let input = arr![arr![x]];
-            let target = x.exp();
+            let mut input = vec![0.0; input_size * batch_size];
+            let mut target = vec![0.0; output_size * batch_size];
+            for j in 0..batch_size {
+                let x: Float = rng.gen_range(-1.0..1.0);
+                let y: Float = rng.gen_range(-1.0..1.0);
+                input[input_size * j] = x;
+                input[input_size * j + 1] = y;
+                target[output_size * j] = x.exp();
+                target[output_size * j + 1] = x.exp() + y.sin();
+            }
 
-            let result = model.forward(input);
-            let loss = model.backward(arr![target]);
+            let input = Arrays::new((vec![batch_size, input_size], input));
+            let target = Arrays::new((vec![batch_size, output_size], target));
 
-            println!(
-                "in: {}, out: {}, target: {}, loss: {}",
-                x, result[0], target, loss
-            );
+            let result = model.forward(input.clone());
+            let loss = model.backward(target.clone());
+
+            println!("loss: {}", loss);
         }
     }
 }
