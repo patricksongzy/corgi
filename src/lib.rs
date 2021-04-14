@@ -53,8 +53,8 @@ mod tests {
         let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
         assert_eq!(product, arr![3.0, 4.0, 3.0]);
         product.backward(None);
-        assert_eq!(product.gradient(), arr![1.0, 1.0, 1.0]);
-        assert_eq!(b.gradient(), arr![1.0, 2.0, 3.0]);
-        assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
+        assert_eq!(product.gradient().unwrap(), arr![1.0, 1.0, 1.0]);
+        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+        assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
     }
 }

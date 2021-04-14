@@ -49,7 +49,7 @@ extern "C" {
 /// `matmul_dimensions` - The dimensions to compute from: `(output_rows, output_cols, sum_len)`.
 /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
 /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
-pub fn matmul_blas(
+pub(crate) fn matmul_blas(
     values: &mut [Float],
     matmul_dimensions: (usize, usize, usize),
     a: (&[Float], bool),
