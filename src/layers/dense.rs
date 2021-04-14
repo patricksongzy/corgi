@@ -99,7 +99,7 @@ mod tests {
             parameters.append(&mut l2.parameters());
 
             for parameter in parameters {
-                let gradient = parameter.gradient();
+                let gradient = parameter.gradient().unwrap();
                 parameter.stop_tracking();
                 *parameter = &*parameter - &(&gradient * learning_rate);
                 parameter.start_tracking();

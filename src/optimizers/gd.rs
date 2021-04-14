@@ -20,10 +20,12 @@ impl Optimizer for GradientDescent {
     fn update(&self, parameters: Vec<&mut Array>) {
         for parameter in parameters {
             let gradient = parameter.gradient();
-            parameter.stop_tracking();
-            *parameter = &*parameter - &(&gradient * self.learning_rate);
-            parameter.start_tracking();
-            *parameter.gradient_mut() = None;
+            if let Some(x) = gradient {
+                parameter.stop_tracking();
+                *parameter = &*parameter - &(&x * self.learning_rate);
+                parameter.start_tracking();
+                *parameter.gradient_mut() = None;
+            }
         }
     }
 }

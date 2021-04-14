@@ -34,7 +34,15 @@ impl Model {
 
     /// Computes the backward pass of a model, and updates parameters.
     pub fn backward(&mut self, target: Array) -> Float {
-        let mut error = (&target - self.output.as_ref().unwrap()).powf(2.0);
+        let output = self.output.as_ref().unwrap();
+        let dimensions = output.dimensions();
+        let batch_size = if dimensions.len() > 1 {
+            dimensions[dimensions.len() - 2]
+        } else {
+            1
+        };
+
+        let mut error = (1.0 / batch_size as Float) * &(&target - output).powf(2.0);
         error.backward(None);
 
         self.update();
@@ -67,7 +75,7 @@ mod tests {
         let mut rng = rand::thread_rng();
 
         let learning_rate = 0.01;
-        let batch_size = 8;
+        let batch_size = 32;
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
@@ -96,7 +104,7 @@ mod tests {
             let input = Arrays::new((vec![batch_size, input_size], input));
             let target = Arrays::new((vec![batch_size, output_size], target));
 
-            let result = model.forward(input.clone());
+            let _result = model.forward(input.clone());
             let loss = model.backward(target.clone());
 
             println!("loss: {}", loss);
