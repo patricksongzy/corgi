@@ -42,11 +42,11 @@ impl Dense {
 }
 
 impl Layer for Dense {
-    fn forward(&self, x: Array) -> Array {
-        let y = &Array::matmul((&x, false), (&self.weights, true)) + &self.biases;
+    fn forward(&self, input: Array) -> Array {
+        let result = &Array::matmul((&input, false), (&self.weights, true)) + &self.biases;
         match &self.activation {
-            Some(f) => f(y),
-            None => y,
+            Some(f) => f(result),
+            None => result,
         }
     }
 

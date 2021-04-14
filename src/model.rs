@@ -23,31 +23,26 @@ impl Model {
     }
 
     /// Computes the forward pass of a model.
-    pub fn forward(&mut self, mut x: Array) -> Array {
+    /// The input should have the dimensions batch size by input size.
+    pub fn forward(&mut self, mut input: Array) -> Array {
         for layer in &self.layers {
-            x = layer.forward(x)
+            input = layer.forward(input)
         }
 
-        self.output = Some(x.clone());
-        x
+        self.output = Some(input.clone());
+        input
     }
 
     /// Computes the backward pass of a model, and updates parameters.
     pub fn backward(&mut self, target: Array) -> Float {
         let output = self.output.as_ref().unwrap();
-        let dimensions = output.dimensions();
-        let batch_size = if dimensions.len() > 1 {
-            dimensions[dimensions.len() - 2]
-        } else {
-            1
-        };
-
-        let mut error = (1.0 / batch_size as Float) * &(&target - output).powf(2.0);
+        let length: usize = output.dimensions().iter().product();
+        let mut error = (1.0 / length as Float) * &(&target - output).powf(2.0);
         error.backward(None);
 
         self.update();
 
-        error.sum()
+        error.sum_all()
     }
 
     fn update(&mut self) {

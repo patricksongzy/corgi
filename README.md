@@ -80,8 +80,8 @@ let backward_op: array::BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &Arra
          Some(Array::op(&vec![&c[0], x], Arc::clone(&op_clone), None))]
 });
 
-let a = arr![1.0, 2.0, 3.0];
-let b = arr![3.0, 2.0, 1.0];
+let a = arr![1.0, 2.0, 3.0].tracked();
+let b = arr![3.0, 2.0, 1.0].tracked();
 let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
 assert_eq!(product, arr![3.0, 4.0, 3.0]);
 product.backward(None);
@@ -95,6 +95,7 @@ assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
 * Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
 * Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
 * Graphs do note store consumers (at the moment). They store consumer counts instead.
+* Array values should never be modified from an operations; instead, new arrays should be created.
 
 ### Tracked Arrays
 * Tracked arrays are arrays which require gradients to be computed, and stored.
