@@ -81,9 +81,7 @@ impl Arrays for Vec<Array> {
         // take ownership if possible, but clone otherwise
         let values = self
             .into_iter()
-            .map(|array| {
-                Arc::try_unwrap(Arc::clone(&array.values)).unwrap_or_else(|x| (*x).clone())
-            })
+            .map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten()
             .collect::<Vec<Float>>();
 
@@ -365,15 +363,7 @@ impl Array {
     }
 
     /// Adds `Vec<Array>` as the children of a vector.
-    fn with_children(mut self, mut children: Vec<Array>) -> Array {
-        for child in &mut children {
-            if child.tracked {
-                child.consumer_count.fetch_add(1, Ordering::Relaxed);
-            }
-
-            child.stop_tracking();
-        }
-
+    fn with_children(mut self, children: Vec<Array>) -> Array {
         self.children = Arc::new(Mutex::new(children));
         self.tracked()
     }
@@ -435,6 +425,19 @@ impl Array {
         output_dimensions: &[usize],
         skip_size: usize,
     ) -> Vec<Float> {
+        let is_dimensions_valid = arrays.iter().all(|a| {
+            a.dimensions
+                .iter()
+                .rev()
+                .skip(skip_size)
+                .zip(input_dimensions.iter().rev().skip(skip_size))
+                .all(|(x, y)| *x == 1 || *x == *y)
+        });
+
+        if !is_dimensions_valid {
+            panic!("error: unable to broadcast arrays to target dimensions");
+        }
+
         // total length of the leading values
         let leading_length = input_dimensions.iter().rev().skip(skip_size).product();
         // total length of the output
@@ -745,8 +748,48 @@ impl Array {
         }
     }
 
-    /// Sums the values of the array.
-    pub fn sum(&self) -> Float {
+    // pub fn softmax(&self) -> Array {
+    //     arr![0.0]
+    // }
+
+    // /// Sums along the last `skip_size` dimensions.
+    // pub fn sum(&self, skip_size: usize) -> Array {
+    //     if skip_size == 0 {
+    //         return Arrays::new((Arc::clone(&self.dimensions), Arc::clone(&self.values)));
+    //     }
+
+    //     let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+    //         output_slice[0] = arrays[0].iter().sum();
+    //     });
+
+    //     let leading_count = self.dimensions.len().saturating_sub(skip_size);
+    //     let mut output_dimensions: Vec<usize> = self
+    //         .dimensions
+    //         .iter()
+    //         .copied()
+    //         .take(leading_count)
+    //         .chain(vec![1; skip_size])
+    //         .collect();
+    //     let output_values = Array::sliced_op(
+    //         vec![self],
+    //         &op,
+    //         &self.dimensions,
+    //         &output_dimensions,
+    //         skip_size,
+    //     );
+
+    //     output_dimensions.truncate(leading_count + 1);
+    //     let result = Arrays::new((output_dimensions, output_values));
+
+    //     result
+    // if !self.tracked {
+    //     result
+    // } else {
+    // }
+    // }
+
+    /// Sums all the values of the array.
+    pub fn sum_all(&self) -> Float {
         self.values.iter().sum()
     }
 
@@ -762,7 +805,7 @@ impl Array {
             return;
         }
 
-        let mut delta = Arc::try_unwrap(Arc::clone(&delta.values)).unwrap_or_else(|x| (*x).clone());
+        let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
         consumer_count -= 1;
         let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
             acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
@@ -774,11 +817,20 @@ impl Array {
             sum(&mut delta, &received.values);
         }
 
-        // self.consumer_count.store(0, Ordering::Relaxed);
+        self.consumer_count.store(0, Ordering::Relaxed);
         *self.tx.lock().unwrap() = None;
 
         let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
         self.backward(Some(delta));
+    }
+
+    fn propagate_consumers(&mut self) {
+        for child in &mut *self.children.lock().unwrap() {
+            if child.tracked {
+                child.consumer_count.fetch_add(1, Ordering::Relaxed);
+                child.propagate_consumers();
+            }
+        }
     }
 
     /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
@@ -789,16 +841,29 @@ impl Array {
     pub fn backward(&mut self, delta: Option<Array>) {
         let mut delta = match delta {
             Some(x) => x,
-            None => Arrays::new((
-                Arc::clone(&self.dimensions),
-                Arc::new(vec![1.0; self.values.len()]),
-            )),
+            None => {
+                self.propagate_consumers();
+                Arrays::new((
+                    Arc::clone(&self.dimensions),
+                    Arc::new(vec![1.0; self.values.len()]),
+                ))
+            }
         };
 
         match &self.backward_op {
             Some(x) => {
                 let mut children_guard = self.children.lock().unwrap();
+
+                for child in &mut *children_guard {
+                    child.stop_tracking();
+                }
+
                 let delta = (*x)(&mut children_guard, &mut delta);
+
+                for child in &mut *children_guard {
+                    child.start_tracking();
+                }
+
                 let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
@@ -839,17 +904,6 @@ impl Array {
         match &mut *gradient_guard {
             Some(x) => *gradient_guard = Some(&*x + &delta),
             None => *gradient_guard = Some(delta),
-        }
-    }
-}
-
-impl Drop for Array {
-    fn drop(&mut self) {
-        if Arc::strong_count(&self.children) <= 1 {
-            let mut guard = self.children.lock().unwrap();
-            for child in &mut *guard {
-                child.consumer_count.fetch_sub(1, Ordering::Relaxed);
-            }
         }
     }
 }
@@ -1247,6 +1301,33 @@ mod tests {
     }
 
     #[test]
+    fn test_consumers_drop() {
+        let a = arr![1.0, 2.0, 3.0].tracked();
+        let _b = &a * &a;
+        let mut c = &a * &a;
+
+        c.backward(None);
+
+        assert_eq!(a.gradient().unwrap(), arr![2.0, 4.0, 6.0]);
+    }
+
+    // #[test]
+    // fn test_sum() {
+    //     let a = arr![
+    //         arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]],
+    //         arr![arr![9.0, 8.0, 7.0], arr![7.0, 6.0, 5.0]]
+    //     ];
+    //     assert_eq!(
+    //         a.sum(1),
+    //         arr![arr![arr![6.0], arr![15.0]], arr![arr![24.0], arr![18.0]]]
+    //     );
+    //     assert_eq!(a.sum(2), arr![arr![21.0], arr![42.0]]);
+
+    //     let mut result = a.sum(2);
+    //     result.backward(None);
+    // }
+
+    #[test]
     fn test_mul_broadcast() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]].tracked();
         let b = arr![1.0, 2.0, 3.0].tracked();
@@ -1434,8 +1515,9 @@ mod tests {
         let b = arr![2.0].tracked();
 
         let product = &a * &b;
-        let _sum = &product + &a;
+        let mut sum = &product + &a;
 
+        sum.propagate_consumers();
         assert_eq!(product.consumer_count.load(Ordering::Relaxed), 1);
         assert_eq!(b.consumer_count.load(Ordering::Relaxed), 1);
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
@@ -1444,12 +1526,18 @@ mod tests {
     #[test]
     fn test_propagate_continue() {
         let a = arr![1.0, 2.0].tracked();
-        let mut _b = arr![5.0, 6.0].tracked();
+        let mut b = arr![5.0, 6.0].tracked();
 
-        _b = &_b * &a;
+        b = &b * &a;
+        b.propagate_consumers();
+        assert!(a.tracked);
+        assert!(b.tracked);
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 1);
 
-        _b = &_b * &a;
+        a.consumer_count.store(0, Ordering::Relaxed);
+
+        b = &b * &a;
+        b.propagate_consumers();
         assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
     }
 
@@ -1459,10 +1547,8 @@ mod tests {
         let b = arr![2.0].tracked();
 
         let product = &a * &b;
-        let result = (*product.backward_op.clone().unwrap())(
-            &mut vec![a.clone(), b.clone()],
-            &mut arr![1.0],
-        );
+        let result =
+            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
 
         assert_eq!(result.len(), 2);
         assert_eq!(
