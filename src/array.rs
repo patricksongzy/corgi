@@ -952,8 +952,13 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
 
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
-        if self.dimensions[self.dimensions.len() - 1] != other.dimensions[other.dimensions.len() - 1] {
-            panic!("error: addition dimensions, {:?}, and {:?} must be matching", self.dimensions, other.dimensions);
+        if self.dimensions[self.dimensions.len() - 1]
+            != other.dimensions[other.dimensions.len() - 1]
+        {
+            panic!(
+                "error: addition dimensions, {:?}, and {:?} must be matching",
+                self.dimensions, other.dimensions
+            );
         }
 
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
@@ -1081,8 +1086,13 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
-        if self.dimensions[self.dimensions.len() - 1] != other.dimensions[other.dimensions.len() - 1] {
-            panic!("error: multiplication dimensions, {:?}, and {:?} must be matching", self.dimensions, other.dimensions);
+        if self.dimensions[self.dimensions.len() - 1]
+            != other.dimensions[other.dimensions.len() - 1]
+        {
+            panic!(
+                "error: multiplication dimensions, {:?}, and {:?} must be matching",
+                self.dimensions, other.dimensions
+            );
         }
 
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
@@ -1246,7 +1256,10 @@ mod tests {
 
         result.backward(None);
         assert_eq!(b.gradient().unwrap(), arr![4.0, 4.0, 4.0]);
-        assert_eq!(a.gradient().unwrap(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]
+        );
     }
 
     #[test]
@@ -1264,7 +1277,10 @@ mod tests {
             b.gradient().unwrap(),
             arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]
         );
-        assert_eq!(a.gradient().unwrap(), arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]);
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]
+        );
     }
 
     #[test]
@@ -1524,7 +1540,10 @@ mod tests {
         assert_eq!(result, arr![arr![3.0, 8.0, 9.0], arr![96.0, 125.0, 144.0]]);
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]);
+        assert_eq!(
+            c.gradient().unwrap(),
+            arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]
+        );
         assert_eq!(
             b.gradient().unwrap(),
             arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]
@@ -1573,7 +1592,10 @@ mod tests {
         result.backward(None);
         assert_eq!(c.gradient().unwrap(), arr![arr![1.0], arr![1.0]]);
         assert_eq!(b.gradient().unwrap(), arr![arr![5.0], arr![7.0], arr![9.0]]);
-        assert_eq!(a.gradient().unwrap(), arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]);
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]
+        );
     }
 
     #[test]
@@ -1589,7 +1611,10 @@ mod tests {
 
         result.backward(None);
         assert_eq!(c.gradient().unwrap(), arr![arr![46.0, 46.0, 46.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![30.0], arr![42.0], arr![54.0]]);
+        assert_eq!(
+            b.gradient().unwrap(),
+            arr![arr![30.0], arr![42.0], arr![54.0]]
+        );
         assert_eq!(
             a.gradient().unwrap(),
             arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]
