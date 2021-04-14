@@ -694,6 +694,24 @@ impl Array {
             .with_backward_op(backward_op)
     }
 
+    /// Computes the reciprocal of each value in the array.
+    pub fn reciprocal(&self) -> Array {
+        let values = Arc::new(self.values.iter().map(|x| 1.0 / x).collect());
+        let result = Arrays::new((Arc::clone(&self.dimensions), values));
+
+        if !self.tracked {
+            result
+        } else {
+            let backward_op = Arc::new(|c: &mut Vec<Array>, x: &Array| {
+                vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]
+            });
+
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
+        }
+    }
+
     /// Raises the array to the specified exponent.
     pub fn powf(&self, exponent: Float) -> Array {
         let values = self
@@ -748,45 +766,94 @@ impl Array {
         }
     }
 
-    // pub fn softmax(&self) -> Array {
-    //     arr![0.0]
-    // }
+    /// Computes the softmax of the array.
+    pub fn softmax(&self) -> Array {
+        let exponentials = self.exp();
+        &exponentials / &exponentials.sum(1)
+    }
 
-    // /// Sums along the last `skip_size` dimensions.
-    // pub fn sum(&self, skip_size: usize) -> Array {
-    //     if skip_size == 0 {
-    //         return Arrays::new((Arc::clone(&self.dimensions), Arc::clone(&self.values)));
-    //     }
+    /// Computes the exponential of all values of the array.
+    pub fn exp(&self) -> Array {
+        let values = Arc::new(self.values.iter().map(|x| x.exp()).collect());
 
-    //     let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
-    //         output_slice[0] = arrays[0].iter().sum();
-    //     });
+        let cached = Arc::clone(&values);
+        let result = Arrays::new((Arc::clone(&self.dimensions), values));
 
-    //     let leading_count = self.dimensions.len().saturating_sub(skip_size);
-    //     let mut output_dimensions: Vec<usize> = self
-    //         .dimensions
-    //         .iter()
-    //         .copied()
-    //         .take(leading_count)
-    //         .chain(vec![1; skip_size])
-    //         .collect();
-    //     let output_values = Array::sliced_op(
-    //         vec![self],
-    //         &op,
-    //         &self.dimensions,
-    //         &output_dimensions,
-    //         skip_size,
-    //     );
+        if !self.tracked {
+            result
+        } else {
+            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+                vec![Some(Arrays::new((
+                    Arc::clone(&c[0].dimensions),
+                    Arc::new(mul_values(&x.values, &cached)),
+                )))]
+            });
 
-    //     output_dimensions.truncate(leading_count + 1);
-    //     let result = Arrays::new((output_dimensions, output_values));
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
+        }
+    }
 
-    //     result
-    // if !self.tracked {
-    //     result
-    // } else {
-    // }
-    // }
+    /// Sums along the last `skip_size` dimensions.
+    pub fn sum(&self, skip_size: usize) -> Array {
+        if skip_size == 0 {
+            return self.clone();
+        }
+
+        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+            output_slice[0] = arrays[0].iter().sum();
+        });
+
+        let leading_count = self.dimensions.len().saturating_sub(skip_size);
+        let target_dimensions: Vec<usize> = self
+            .dimensions
+            .iter()
+            .copied()
+            .take(leading_count)
+            .chain(vec![1; skip_size])
+            .collect();
+        let output_values = Array::sliced_op(
+            vec![self],
+            &op,
+            &self.dimensions,
+            &target_dimensions,
+            skip_size,
+        );
+
+        let output_dimensions = target_dimensions[0..leading_count + 1].to_vec();
+        let result = Arrays::new((output_dimensions, output_values));
+
+        if !self.tracked {
+            result
+        } else {
+            let backward_op = Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+                let op: SlicedOp =
+                    Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+                        for output in output_slice.iter_mut() {
+                            *output = arrays[0][0];
+                        }
+                    });
+
+                let output_values = Array::sliced_op(
+                    vec![&x],
+                    &op,
+                    &target_dimensions,
+                    &c[0].dimensions,
+                    skip_size,
+                );
+
+                vec![Some(Arrays::new((
+                    Arc::clone(&c[0].dimensions),
+                    Arc::new(output_values),
+                )))]
+            });
+
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
+        }
+    }
 
     /// Sums all the values of the array.
     pub fn sum_all(&self) -> Float {
@@ -828,7 +895,9 @@ impl Array {
         for child in &mut *self.children.lock().unwrap() {
             if child.tracked {
                 child.consumer_count.fetch_add(1, Ordering::Relaxed);
-                child.propagate_consumers();
+                if child.consumer_count.load(Ordering::Relaxed) == 1 {
+                    child.propagate_consumers();
+                }
             }
         }
     }
@@ -973,7 +1042,7 @@ fn flatten_indices(indices: &[usize], dimensions: &[usize]) -> usize {
             .iter()
             .rev()
             .zip(dimensions.iter().rev())
-            .filter(|&(i, d)| *i >= *d)
+            .filter(|&(i, d)| *i >= *d && *d != 1)
             .peekable()
             .peek()
             .is_none();
@@ -990,6 +1059,7 @@ fn flatten_indices(indices: &[usize], dimensions: &[usize]) -> usize {
 
     // dimensions will always have at least one element
     iter.zip(dimensions.iter().skip(1))
+        .filter(|&(i, d)| *i < *d || *d != 1)
         .fold(*first, |acc, (i, d)| acc * d + i)
 }
 
@@ -1006,9 +1076,9 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
 
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
-        if self.dimensions[self.dimensions.len() - 1]
-            != other.dimensions[other.dimensions.len() - 1]
-        {
+        let is_dimensions_valid = self.dimensions[self.dimensions.len() - 1]
+            == other.dimensions[other.dimensions.len() - 1];
+        if !is_dimensions_valid {
             panic!(
                 "error: addition dimensions, {:?}, and {:?} must be matching",
                 self.dimensions, other.dimensions
@@ -1140,9 +1210,12 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
-        if self.dimensions[self.dimensions.len() - 1]
-            != other.dimensions[other.dimensions.len() - 1]
-        {
+        let is_dimensions_valid = self.dimensions[self.dimensions.len() - 1]
+            == other.dimensions[other.dimensions.len() - 1]
+            || self.dimensions[self.dimensions.len() - 1] == 1
+            || other.dimensions[other.dimensions.len() - 1] == 1;
+
+        if !is_dimensions_valid {
             panic!(
                 "error: multiplication dimensions, {:?}, and {:?} must be matching",
                 self.dimensions, other.dimensions
@@ -1155,14 +1228,27 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
             }
         });
 
-        let dimensions = if self.dimensions.len() >= other.dimensions.len() {
-            &self.dimensions
+        // TODO should be in its own function
+        // TODO implement this for add, and matmul
+        let dimensions = if self.dimensions.len() > other.dimensions.len() {
+            let mut longer = (*self.dimensions).clone();
+            for (x, y) in longer.iter_mut().rev().zip(other.dimensions.iter().rev()) {
+                *x = std::cmp::max(*x, *y);
+            }
+
+            longer
         } else {
-            &other.dimensions
+            let mut longer = (*other.dimensions).clone();
+            for (x, y) in longer.iter_mut().rev().zip(self.dimensions.iter().rev()) {
+                *x = std::cmp::max(*x, *y);
+            }
+
+            longer
         };
 
+        let dimensions = Arc::new(dimensions);
         let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
-        let result = Arrays::new((Arc::clone(dimensions), Arc::new(output_values)));
+        let result = Arrays::new((Arc::clone(&dimensions), Arc::new(output_values)));
 
         if !self.tracked && !other.tracked {
             result
@@ -1194,6 +1280,15 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
                 .with_children(vec![self.clone(), other.clone()])
                 .with_backward_op(Some(backward_op))
         }
+    }
+}
+
+impl<'a, 'b> ops::Div<&'b Array> for &'a Array {
+    type Output = Array;
+
+    #[inline]
+    fn div(self, other: &Array) -> Self::Output {
+        self * &other.reciprocal()
     }
 }
 
@@ -1311,21 +1406,58 @@ mod tests {
         assert_eq!(a.gradient().unwrap(), arr![2.0, 4.0, 6.0]);
     }
 
-    // #[test]
-    // fn test_sum() {
-    //     let a = arr![
-    //         arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]],
-    //         arr![arr![9.0, 8.0, 7.0], arr![7.0, 6.0, 5.0]]
-    //     ];
-    //     assert_eq!(
-    //         a.sum(1),
-    //         arr![arr![arr![6.0], arr![15.0]], arr![arr![24.0], arr![18.0]]]
-    //     );
-    //     assert_eq!(a.sum(2), arr![arr![21.0], arr![42.0]]);
+    #[test]
+    fn test_exp() {
+        let a = arr![
+            (1.0 as Float).ln(),
+            (2.0 as Float).ln(),
+            (2.0 as Float).ln()
+        ]
+        .tracked();
+        let b = arr![2.0, 4.0, 6.0].tracked();
 
-    //     let mut result = a.sum(2);
-    //     result.backward(None);
-    // }
+        let mut result = &a.exp() * &b;
+        assert_eq!(result, arr![2.0, 8.0, 12.0]);
+
+        result.backward(None);
+        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 2.0]);
+        assert_eq!(a.gradient().unwrap(), arr![2.0, 8.0, 12.0]);
+    }
+
+    #[test]
+    fn test_sum() {
+        let a = arr![
+            arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]],
+            arr![arr![9.0, 8.0, 7.0], arr![7.0, 6.0, 5.0]]
+        ]
+        .tracked();
+        assert_eq!(
+            a.sum(1),
+            arr![arr![arr![6.0], arr![15.0]], arr![arr![24.0], arr![18.0]]]
+        );
+        assert_eq!(a.sum(2), arr![arr![21.0], arr![42.0]]);
+
+        let mut result = 2.0 * &a.sum(2);
+        result.backward(None);
+
+        let gradient_expect = arr![
+            arr![arr![2.0, 2.0, 2.0], arr![2.0, 2.0, 2.0]],
+            arr![arr![2.0, 2.0, 2.0], arr![2.0, 2.0, 2.0]]
+        ];
+        assert_eq!(a.gradient().unwrap(), gradient_expect);
+    }
+
+    #[test]
+    fn test_backward_sum() {
+        let a = arr![1.0, 2.0, 3.0].tracked();
+        let b = arr![3.0, 2.0, 1.0].tracked();
+        let c = a.sum(0).tracked();
+        let mut result = &c * &b;
+
+        result.backward(None);
+        assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
+        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+    }
 
     #[test]
     fn test_mul_broadcast() {
@@ -1617,6 +1749,33 @@ mod tests {
     }
 
     #[test]
+    fn test_backward_div() {
+        let a = arr![arr![2.0, 4.0], arr![1.0, 2.0]].tracked();
+        let b = arr![arr![2.0, 2.0], arr![2.0, 1.0]].tracked();
+
+        let mut result = &a / &b;
+        assert_eq!(result, arr![arr![1.0, 2.0], arr![0.5, 2.0]]);
+
+        result.backward(None);
+        assert_eq!(
+            b.gradient().unwrap(),
+            arr![arr![-0.5, -1.0], arr![-0.25, -2.0]]
+        );
+        assert_eq!(a.gradient().unwrap(), arr![arr![0.5, 0.5], arr![0.5, 1.0]]);
+    }
+
+    #[test]
+    fn test_backward_div_sum() {
+        let a = arr![arr![2.0, 4.0, 2.0]].tracked();
+
+        let mut result = &a / &a.sum(1);
+        assert_eq!(result, arr![arr![0.25, 0.5, 0.25]]);
+
+        result.backward(None);
+        assert_eq!(a.gradient().unwrap(), arr![arr![0.0, 0.0, 0.0]]);
+    }
+
+    #[test]
     fn test_backward_powf() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]].tracked();
         let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]].tracked();
@@ -1637,6 +1796,28 @@ mod tests {
         assert_eq!(
             a.gradient().unwrap(),
             arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]
+        );
+    }
+
+    #[test]
+    fn test_backward_softmax() {
+        let a = arr![
+            arr![(2.0 as Float).ln(), (2.0 as Float).ln()],
+            arr![(1.0 as Float).ln(), (1.0 as Float).ln()]
+        ]
+        .tracked();
+        let b = arr![arr![3.0, 5.0], arr![2.0, 5.0]].tracked();
+        let c = a.softmax().tracked();
+
+        let mut result = &c * &b;
+        assert_eq!(result, arr![arr![1.5, 2.5], arr![1.0, 2.5]]);
+
+        result.backward(None);
+        assert_eq!(c.gradient().unwrap(), arr![arr![3.0, 5.0], arr![2.0, 5.0]]);
+        assert_eq!(b.gradient().unwrap(), arr![arr![0.5, 0.5], arr![0.5, 0.5]]);
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![arr![-0.5, 0.5], arr![-0.75, 0.75]]
         );
     }
 

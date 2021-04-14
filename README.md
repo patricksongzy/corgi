@@ -112,7 +112,7 @@ But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at 
 so the name Corgi was chosen.
 
 ## Acknowledgements
-* Shields are from [shields.io](https://shields.io)
+* Shields are from [shields.io](https://shields.io).
 
 ## Licence
 * MIT
