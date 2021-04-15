@@ -2,6 +2,7 @@
 
 use crate::array::*;
 use crate::layer::Layer;
+use crate::nn_functions::cost::CostFunction;
 use crate::numbers::*;
 use crate::optimizer::Optimizer;
 
@@ -10,15 +11,21 @@ pub struct Model {
     layers: Vec<Box<dyn Layer>>,
     output: Option<Array>,
     optimizer: Box<dyn Optimizer>,
+    cost: CostFunction,
 }
 
 impl Model {
     /// Constructs a new model given the layers.
-    pub fn new(layers: Vec<Box<dyn Layer>>, optimizer: Box<dyn Optimizer>) -> Model {
+    pub fn new(
+        layers: Vec<Box<dyn Layer>>,
+        optimizer: Box<dyn Optimizer>,
+        cost: CostFunction,
+    ) -> Model {
         Model {
             layers,
             output: None,
             optimizer,
+            cost,
         }
     }
 
@@ -36,8 +43,7 @@ impl Model {
     /// Computes the backward pass of a model, and updates parameters.
     pub fn backward(&mut self, target: Array) -> Float {
         let output = self.output.as_ref().unwrap();
-        let length: usize = output.dimensions().iter().product();
-        let mut error = (1.0 / length as Float) * &(&target - output).powf(2.0);
+        let mut error = (self.cost)(&output, &target);
         error.backward(None);
 
         self.update();
@@ -60,29 +66,26 @@ impl Model {
 mod tests {
     use super::*;
     use crate::layers::dense::Dense;
+    use crate::nn_functions::{activation, cost, initializer};
     use crate::optimizers::gd::GradientDescent;
 
-    use std::sync::Arc;
+    use rand::Rng;
 
     #[test]
     fn test_model() {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
-
         let learning_rate = 0.01;
         let batch_size = 32;
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
-        let initializer = Arc::new(|x: Float| {
-            let range = 1.0 / x.sqrt();
-            rand::thread_rng().gen_range(-range..=range)
-        });
-        let sigmoid = Arc::new(|x: Array| x.sigmoid());
+        let initializer = initializer::make_he();
+        let sigmoid = activation::make_sigmoid();
+        let mse = cost::make_mse();
         let gd = GradientDescent::new(learning_rate);
         let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
         let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
-        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd));
+        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
 
         for _ in 0..8 {
             let mut input = vec![0.0; input_size * batch_size];

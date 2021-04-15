@@ -772,6 +772,23 @@ impl Array {
         &exponentials / &exponentials.sum(1)
     }
 
+    /// Computes the natural logarithm of all values of the array.
+    pub fn ln(&self) -> Array {
+        let values = Arc::new(self.values.iter().map(|x| x.ln()).collect());
+        let result = Arrays::new((Arc::clone(&self.dimensions), values));
+
+        if !self.tracked {
+            result
+        } else {
+            let backward_op =
+                Arc::new(|c: &mut Vec<Array>, x: &Array| vec![Some(x * &c[0].reciprocal())]);
+
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
+        }
+    }
+
     /// Computes the exponential of all values of the array.
     pub fn exp(&self) -> Array {
         let values = Arc::new(self.values.iter().map(|x| x.exp()).collect());
@@ -1071,19 +1088,39 @@ fn mul_values(a: &[Float], b: &[Float]) -> Vec<Float> {
     a.iter().zip(b).map(|(x, y)| x * y).collect::<Vec<Float>>()
 }
 
+/// Computes the element-wise dimensions to broadcast to.
+fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usize> {
+    let (mut longer, other) = if x.len() > y.len() {
+        ((**x).clone(), y)
+    } else {
+        ((**y).clone(), x)
+    };
+
+    let is_dimensions_valid = longer
+        .iter()
+        .rev()
+        .zip(other.iter().rev())
+        .all(|(&l, &o)| l == o || l == 1 || o == 1);
+    if !is_dimensions_valid {
+        panic!(
+            "error: multiplication dimensions, {:?}, and {:?} must be matching",
+            *x, *y
+        );
+    }
+
+    for (l, o) in longer.iter_mut().rev().zip(other.iter().rev()) {
+        *l = std::cmp::max(*l, *o);
+    }
+
+    longer
+}
+
 impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     type Output = Array;
 
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
-        let is_dimensions_valid = self.dimensions[self.dimensions.len() - 1]
-            == other.dimensions[other.dimensions.len() - 1];
-        if !is_dimensions_valid {
-            panic!(
-                "error: addition dimensions, {:?}, and {:?} must be matching",
-                self.dimensions, other.dimensions
-            );
-        }
+        let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
 
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
             for (i, output) in output_slice.iter_mut().enumerate() {
@@ -1091,14 +1128,8 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
             }
         });
 
-        let dimensions = if self.dimensions.len() >= other.dimensions.len() {
-            &self.dimensions
-        } else {
-            &other.dimensions
-        };
-
         let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
-        let result = Arrays::new((Arc::clone(dimensions), Arc::new(output_values)));
+        let result = Arrays::new((Arc::new(dimensions), Arc::new(output_values)));
 
         if !self.tracked && !other.tracked {
             result
@@ -1210,41 +1241,12 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
 
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
-        let is_dimensions_valid = self.dimensions[self.dimensions.len() - 1]
-            == other.dimensions[other.dimensions.len() - 1]
-            || self.dimensions[self.dimensions.len() - 1] == 1
-            || other.dimensions[other.dimensions.len() - 1] == 1;
-
-        if !is_dimensions_valid {
-            panic!(
-                "error: multiplication dimensions, {:?}, and {:?} must be matching",
-                self.dimensions, other.dimensions
-            );
-        }
-
+        let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
             for (i, output) in output_slice.iter_mut().enumerate() {
                 *output = arrays[0][i] * arrays[1][i];
             }
         });
-
-        // TODO should be in its own function
-        // TODO implement this for add, and matmul
-        let dimensions = if self.dimensions.len() > other.dimensions.len() {
-            let mut longer = (*self.dimensions).clone();
-            for (x, y) in longer.iter_mut().rev().zip(other.dimensions.iter().rev()) {
-                *x = std::cmp::max(*x, *y);
-            }
-
-            longer
-        } else {
-            let mut longer = (*other.dimensions).clone();
-            for (x, y) in longer.iter_mut().rev().zip(self.dimensions.iter().rev()) {
-                *x = std::cmp::max(*x, *y);
-            }
-
-            longer
-        };
 
         let dimensions = Arc::new(dimensions);
         let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
@@ -1292,6 +1294,8 @@ impl<'a, 'b> ops::Div<&'b Array> for &'a Array {
     }
 }
 
+// TODO delta equals
+// TODO gradient check
 // TODO test f32
 // TODO test calling backward, doing more computation, then calling backward again
 // TODO test with multiple calls to backward
@@ -1404,6 +1408,23 @@ mod tests {
         c.backward(None);
 
         assert_eq!(a.gradient().unwrap(), arr![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_ln() {
+        let a = arr![(1.0 as Float).exp(), (2.0 as Float).exp()];
+
+        let result = a.ln();
+        assert_eq!(result, arr![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_ln_backward() {
+        let a = arr![1.0, 2.0].tracked();
+
+        let mut result = a.ln();
+        result.backward(None);
+        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
     }
 
     #[test]
