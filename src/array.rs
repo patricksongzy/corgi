@@ -30,6 +30,8 @@
 use crate::blas::matmul_blas;
 use crate::numbers::*;
 
+use approx::{AbsDiffEq, RelativeEq};
+
 use std::ops;
 use std::ops::Index;
 
@@ -1020,6 +1022,43 @@ impl PartialEq for Array {
     }
 }
 
+impl AbsDiffEq for Array {
+    type Epsilon = <Float as AbsDiffEq>::Epsilon;
+
+    fn default_epsilon() -> <Float as AbsDiffEq>::Epsilon {
+        Float::default_epsilon()
+    }
+
+    fn abs_diff_eq(&self, other: &Array, epsilon: <Float as AbsDiffEq>::Epsilon) -> bool {
+        *self.dimensions == *other.dimensions
+            && self
+                .values
+                .iter()
+                .zip(other.values.iter())
+                .all(|(x, y)| Float::abs_diff_eq(x, y, epsilon))
+    }
+}
+
+impl RelativeEq for Array {
+    fn default_max_relative() -> <Float as AbsDiffEq>::Epsilon {
+        Float::default_max_relative()
+    }
+
+    fn relative_eq(
+        &self,
+        other: &Array,
+        epsilon: <Float as AbsDiffEq>::Epsilon,
+        max_relative: <Float as AbsDiffEq>::Epsilon,
+    ) -> bool {
+        *self.dimensions == *other.dimensions
+            && self
+                .values
+                .iter()
+                .zip(other.values.iter())
+                .all(|(x, y)| Float::relative_eq(x, y, epsilon, max_relative))
+    }
+}
+
 impl fmt::Debug for Array {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Array")
@@ -1415,7 +1454,7 @@ mod tests {
         let a = arr![(1.0 as Float).exp(), (2.0 as Float).exp()];
 
         let result = a.ln();
-        assert_eq!(result, arr![1.0, 2.0]);
+        assert_relative_eq!(result, arr![1.0, 2.0]);
     }
 
     #[test]
@@ -1424,7 +1463,7 @@ mod tests {
 
         let mut result = a.ln();
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
+        assert_relative_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
     }
 
     #[test]
@@ -1849,12 +1888,12 @@ mod tests {
         let c = a.sigmoid().tracked();
 
         let mut result = &c * &b;
-        assert_eq!(result, arr![arr![3.75]]);
+        assert_relative_eq!(result, arr![arr![3.75]]);
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
-        assert_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
+        assert_relative_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
+        assert_relative_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
+        assert_relative_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
     }
 
     #[test]
