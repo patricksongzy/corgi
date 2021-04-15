@@ -1,9 +1,9 @@
 //! A fully-connected neural network layer, which applies y = activation(Ax + b).
 
-use crate::activation::Activation;
 use crate::array::*;
-use crate::initializer::Initializer;
 use crate::layer::Layer;
+use crate::nn_functions::activation::Activation;
+use crate::nn_functions::initializer::Initializer;
 use crate::numbers::*;
 
 /// A fully-connected neural network layer, storing the parameters of the layer.

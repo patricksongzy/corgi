@@ -19,29 +19,38 @@
 ## BLAS
 * The BLAS feature can be enabled, and requires CBLAS if used.
 
+## Important Design Notes
+* Array values should never be modified from operations; instead, new arrays should be created.
+* Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
+
 ## Examples
+* Fully-connected [MNIST](https://github.com/patricksongzy/corgi-sample/blob/main/src/main.rs) (convolutional neural networks are in-progress).
 * Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
 ```rust
-let initializer = Arc::new(|x: Float| {
-    let range = 1.0 / x.sqrt();
-    rand::thread_rng().gen_range(-range..=range)
-});
-let sigmoid = Arc::new(|x: Array| x.sigmoid());
+let initializer = initializer::make_he();
+let sigmoid = activation::make_sigmoid();
+let mse = cost::make_mse();
 let gd = GradientDescent::new(learning_rate);
 let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
 let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
-let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd));
+let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
 
-for _ in 0..iterations {
+for _ in 0..8 {
     let mut input = vec![0.0; input_size * batch_size];
     let mut target = vec![0.0; output_size * batch_size];
-
-    // initialize inputs, and targets
+    for j in 0..batch_size {
+	let x: Float = rng.gen_range(-1.0..1.0);
+	let y: Float = rng.gen_range(-1.0..1.0);
+	input[input_size * j] = x;
+	input[input_size * j + 1] = y;
+	target[output_size * j] = x.exp();
+	target[output_size * j + 1] = x.exp() + y.sin();
+    }
 
     let input = Arrays::new((vec![batch_size, input_size], input));
     let target = Arrays::new((vec![batch_size, output_size], target));
 
-    let result = model.forward(input.clone());
+    let _result = model.forward(input.clone());
     let loss = model.backward(target.clone());
 
     println!("loss: {}", loss);
@@ -95,7 +104,6 @@ assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
 * Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
 * Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
 * Graphs do note store consumers (at the moment). They store consumer counts instead.
-* Array values should never be modified from an operations; instead, new arrays should be created.
 
 ### Tracked Arrays
 * Tracked arrays are arrays which require gradients to be computed, and stored.

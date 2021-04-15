@@ -8,13 +8,12 @@ extern crate libc;
 pub mod numbers;
 #[macro_use]
 pub mod array;
-pub mod activation;
 #[cfg(feature = "blas")]
 pub mod blas;
-pub mod initializer;
 pub mod layer;
 pub mod layers;
 pub mod model;
+pub mod nn_functions;
 pub mod optimizer;
 pub mod optimizers;
 
