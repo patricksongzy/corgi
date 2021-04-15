@@ -629,7 +629,7 @@ impl Array {
         } else {
             &b.dimensions
         };
-        
+
         // TODO broadcasting - special case with single dimensions tensor
         // TODO OpenCL
         let output_rows = if a.dimensions.len() < 2 && (!a_transpose || b.dimensions.len() < 2) {

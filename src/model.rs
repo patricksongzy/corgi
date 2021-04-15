@@ -57,7 +57,11 @@ impl Model {
 
     /// Retrieves the parameters of every layer in the model.
     fn parameters(layers: &mut Vec<Box<dyn Layer>>) -> Vec<&mut Array> {
-        layers.iter_mut().map(|l| l.parameters()).flatten().collect()
+        layers
+            .iter_mut()
+            .map(|l| l.parameters())
+            .flatten()
+            .collect()
     }
 }
 
@@ -87,9 +91,23 @@ mod tests {
         let softmax = activation::make_softmax();
         let cross_entropy = cost::make_cross_entropy();
         let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(Arc::clone(&sigmoid)));
-        let l2 = Dense::new(hidden_size, output_size, initializer.clone(), Some(Arc::clone(&softmax)));
-        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), Arc::clone(&cross_entropy));
+        let l1 = Dense::new(
+            input_size,
+            hidden_size,
+            initializer.clone(),
+            Some(Arc::clone(&sigmoid)),
+        );
+        let l2 = Dense::new(
+            hidden_size,
+            output_size,
+            initializer.clone(),
+            Some(Arc::clone(&softmax)),
+        );
+        let mut model = Model::new(
+            vec![Box::new(l1), Box::new(l2)],
+            Box::new(gd),
+            Arc::clone(&cross_entropy),
+        );
 
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
         model.forward(arr![x, y]);
