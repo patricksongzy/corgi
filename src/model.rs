@@ -79,20 +79,21 @@ mod tests {
         #[cfg(not(feature = "f32"))]
         let epsilon = 1e-7;
         let learning_rate = 1.0;
-        let input_size = 1;
+        let input_size = 2;
         let hidden_size = 16;
-        let output_size = 1;
+        let output_size = 2;
         let initializer = initializer::make_he();
         let sigmoid = activation::make_sigmoid();
-        let mse = cost::make_mse();
+        let softmax = activation::make_softmax();
+        let cross_entropy = cost::make_cross_entropy();
         let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
-        let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
-        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), Arc::clone(&mse));
+        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(Arc::clone(&sigmoid)));
+        let l2 = Dense::new(hidden_size, output_size, initializer.clone(), Some(Arc::clone(&softmax)));
+        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), Arc::clone(&cross_entropy));
 
-        let (x, y) = (5.0, 6.0);
-        model.forward(arr![x]);
-        model.backward(arr![y]);
+        let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
+        model.forward(arr![x, y]);
+        model.backward(arr![z, w]);
 
         // due to borrow checking, we need to keep re-borrowing, and dropping the parameters
         let parameters = Model::parameters(&mut model.layers);
@@ -120,8 +121,8 @@ mod tests {
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_plus = model.forward(arr![x]);
-                let error_plus = (mse)(&result_plus, &arr![y]).sum_all();
+                let result_plus = model.forward(arr![x, y]);
+                let error_plus = (cross_entropy)(&result_plus, &arr![z, w]).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = -2.0 * epsilon;
@@ -134,8 +135,8 @@ mod tests {
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_minus = model.forward(arr![x]);
-                let error_minus = (mse)(&result_minus, &arr![y]).sum_all();
+                let result_minus = model.forward(arr![x, y]);
+                let error_minus = (cross_entropy)(&result_minus, &arr![z, w]).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
@@ -149,6 +150,7 @@ mod tests {
                 std::mem::drop(parameters);
 
                 let numerical_gradient = (error_plus - error_minus) / (2.0 * epsilon);
+                println!("{} {}", gradient[j], numerical_gradient);
                 numerator += ((gradient[j] - numerical_gradient).abs()).powf(2.0);
                 denominator += ((gradient[j] + numerical_gradient).abs()).powf(2.0);
             }
