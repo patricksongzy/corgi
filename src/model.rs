@@ -2,7 +2,7 @@
 
 use crate::array::*;
 use crate::layer::Layer;
-use crate::nn_functions::cost::CostFunction;
+use crate::nn::cost::CostFunction;
 use crate::numbers::*;
 use crate::optimizer::Optimizer;
 
@@ -46,19 +46,18 @@ impl Model {
         let mut error = (self.cost)(&output, &target);
         error.backward(None);
 
-        self.update();
-
         error.sum_all()
     }
 
-    fn update(&mut self) {
-        let parameters = self
-            .layers
-            .iter_mut()
-            .map(|l| l.parameters())
-            .flatten()
-            .collect();
+    /// Updates all parameters of the model.
+    pub fn update(&mut self) {
+        let parameters = Model::parameters(&mut self.layers);
         self.optimizer.update(parameters);
+    }
+
+    /// Retrieves the parameters of every layer in the model.
+    fn parameters(layers: &mut Vec<Box<dyn Layer>>) -> Vec<&mut Array> {
+        layers.iter_mut().map(|l| l.parameters()).flatten().collect()
     }
 }
 
@@ -66,15 +65,110 @@ impl Model {
 mod tests {
     use super::*;
     use crate::layers::dense::Dense;
-    use crate::nn_functions::{activation, cost, initializer};
+    use crate::nn::{activation, cost, initializer};
     use crate::optimizers::gd::GradientDescent;
 
     use rand::Rng;
 
+    use std::sync::Arc;
+
+    #[test]
+    fn test_gradient() {
+        #[cfg(feature = "f32")]
+        let epsilon = 1e-2;
+        #[cfg(not(feature = "f32"))]
+        let epsilon = 1e-7;
+        let learning_rate = 1.0;
+        let input_size = 2;
+        let hidden_size = 16;
+        let output_size = 2;
+        let initializer = initializer::make_he();
+        let sigmoid = activation::make_sigmoid();
+        let softmax = activation::make_softmax();
+        let cross_entropy = cost::make_cross_entropy();
+        let gd = GradientDescent::new(learning_rate);
+        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(Arc::clone(&sigmoid)));
+        let l2 = Dense::new(hidden_size, output_size, initializer.clone(), Some(Arc::clone(&softmax)));
+        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), Arc::clone(&cross_entropy));
+
+        let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
+        model.forward(arr![x, y]);
+        model.backward(arr![z, w]);
+
+        // due to borrow checking, we need to keep re-borrowing, and dropping the parameters
+        let parameters = Model::parameters(&mut model.layers);
+        let length = parameters.len();
+        std::mem::drop(parameters);
+        for i in 0..length {
+            let parameters = Model::parameters(&mut model.layers);
+            let value_length = parameters[i].values().len();
+            let dimensions = Arc::new(parameters[i].dimensions().clone());
+            let gradient = parameters[i].gradient().unwrap().clone();
+            std::mem::drop(parameters);
+
+            let mut numerator = 0.0;
+            let mut denominator = 0.0;
+
+            for j in 0..value_length {
+                let mut delta = vec![0.0; value_length];
+                delta[j] = epsilon;
+                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+
+                let mut parameters = Model::parameters(&mut model.layers);
+                let parameter = &mut parameters[i];
+                parameter.stop_tracking();
+                **parameter = &**parameter + &delta;
+                parameter.start_tracking();
+                std::mem::drop(parameters);
+
+                let result_plus = model.forward(arr![x, y]);
+                let error_plus = (cross_entropy)(&result_plus, &arr![z, w]).sum_all();
+
+                let mut delta = vec![0.0; value_length];
+                delta[j] = -2.0 * epsilon;
+                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+
+                let mut parameters = Model::parameters(&mut model.layers);
+                let parameter = &mut parameters[i];
+                parameter.stop_tracking();
+                **parameter = &**parameter + &delta;
+                parameter.start_tracking();
+                std::mem::drop(parameters);
+
+                let result_minus = model.forward(arr![x, y]);
+                let error_minus = (cross_entropy)(&result_minus, &arr![z, w]).sum_all();
+
+                let mut delta = vec![0.0; value_length];
+                delta[j] = epsilon;
+                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+
+                let mut parameters = Model::parameters(&mut model.layers);
+                let parameter = &mut parameters[i];
+                parameter.stop_tracking();
+                **parameter = &**parameter + &delta;
+                parameter.start_tracking();
+                std::mem::drop(parameters);
+
+                let numerical_gradient = (error_plus - error_minus) / (2.0 * epsilon);
+                println!("{} {}", gradient[j], numerical_gradient);
+                numerator += ((gradient[j] - numerical_gradient).abs()).powf(2.0);
+                denominator += ((gradient[j] + numerical_gradient).abs()).powf(2.0);
+            }
+
+            numerator = numerator.sqrt();
+            denominator = denominator.sqrt();
+
+            let norm = numerator / denominator;
+
+            println!("{}", norm);
+            assert!(norm < epsilon);
+        }
+    }
+
     #[test]
     fn test_model() {
         let mut rng = rand::thread_rng();
-        let learning_rate = 0.01;
+        let learning_rate = 1.0;
         let batch_size = 32;
         let input_size = 2;
         let hidden_size = 16;
@@ -104,6 +198,7 @@ mod tests {
 
             let _result = model.forward(input.clone());
             let loss = model.backward(target.clone());
+            model.update();
 
             println!("loss: {}", loss);
         }

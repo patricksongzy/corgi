@@ -30,6 +30,8 @@
 use crate::blas::matmul_blas;
 use crate::numbers::*;
 
+use approx::{AbsDiffEq, RelativeEq};
+
 use std::ops;
 use std::ops::Index;
 
@@ -182,6 +184,7 @@ impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
             backward_op: None,
             tx: Arc::new(Mutex::new(None)),
             tracked: false,
+            keep_gradient: false,
             gradient: Arc::new(Mutex::new(None)),
         }
     }
@@ -220,6 +223,7 @@ pub struct Array {
     backward_op: Option<BackwardOp>,
     tx: Arc<Mutex<Option<Sender<Array>>>>,
     tracked: bool,
+    keep_gradient: bool,
     gradient: Arc<Mutex<Option<Array>>>,
 }
 
@@ -318,6 +322,7 @@ impl Array {
     /// # }
     /// ```
     pub fn tracked(mut self) -> Array {
+        self.keep_gradient = true;
         self.tracked = true;
         self
     }
@@ -352,6 +357,7 @@ impl Array {
     /// # }
     /// ```
     pub fn untracked(mut self) -> Array {
+        self.keep_gradient = false;
         self.tracked = false;
         self
     }
@@ -374,44 +380,120 @@ impl Array {
         self
     }
 
-    /// Performs a matrix multiplication on two matrices, storing the result in `values`.
+    /// Awaits for deltas from all consumers, then continues the backward pass.
     ///
-    /// # Arguments
+    /// # Panics
     ///
-    /// `values` - The result values slice.
-    /// `matmul_dimensions` - The dimensions to compute from: `(output_rows, output_cols, sum_len)`.
-    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
-    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
-    #[cfg(not(feature = "blas"))]
-    fn matmul_flat(
-        values: &mut [Float],
-        matmul_dimensions: (usize, usize, usize),
-        a: (&[Float], bool),
-        b: (&[Float], bool),
-    ) {
-        let (output_rows, output_cols, sum_len) = matmul_dimensions;
-        let (a, a_transpose) = a;
-        let (b, b_transpose) = b;
-        for r in 0..output_rows {
-            for j in 0..output_cols {
-                let mut sum = 0.0;
-                for k in 0..sum_len {
-                    let a_index = if a_transpose {
-                        k * output_rows + r
-                    } else {
-                        r * sum_len + k
-                    };
+    /// Panics if the current node has no consumers (is an end node).
+    fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
+        let mut consumer_count = self.consumer_count.load(Ordering::Relaxed);
+        if consumer_count == 0 {
+            self.backward(Some(delta));
+            return;
+        }
 
-                    let b_index = if b_transpose {
-                        j * sum_len + k
-                    } else {
-                        k * output_cols + j
-                    };
+        let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
+        consumer_count -= 1;
+        let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
+            acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
+        };
 
-                    sum += a[a_index] * b[b_index];
+        while consumer_count > 0 {
+            let received = rx.recv().unwrap();
+            consumer_count -= 1;
+            sum(&mut delta, &received.values);
+        }
+
+        self.consumer_count.store(0, Ordering::Relaxed);
+        *self.tx.lock().unwrap() = None;
+
+        let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
+        self.backward(Some(delta));
+    }
+
+    fn propagate_consumers(&mut self) {
+        for child in &mut *self.children.lock().unwrap() {
+            if child.tracked {
+                child.consumer_count.fetch_add(1, Ordering::Relaxed);
+                if child.consumer_count.load(Ordering::Relaxed) == 1 {
+                    child.propagate_consumers();
+                }
+            }
+        }
+    }
+
+    /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
+    pub fn backward(&mut self, delta: Option<Array>) {
+        let mut delta = match delta {
+            Some(x) => x,
+            None => {
+                self.propagate_consumers();
+                Arrays::new((
+                    Arc::clone(&self.dimensions),
+                    Arc::new(vec![1.0; self.values.len()]),
+                ))
+            }
+        };
+
+        match &self.backward_op {
+            Some(x) => {
+                let mut children_guard = self.children.lock().unwrap();
+
+                for child in &mut *children_guard {
+                    child.stop_tracking();
                 }
 
-                values[r * output_cols + j] = sum;
+                let delta = (*x)(&mut children_guard, &mut delta);
+
+                for child in &mut *children_guard {
+                    child.start_tracking();
+                }
+
+                let mut handles = Vec::new();
+                // start a new thread which will wait on all consumers
+                for (i, delta) in delta.into_iter().enumerate() {
+                    if let Some(delta) = delta {
+                        let mut tx_guard = children_guard[i].tx.lock().unwrap();
+                        match &*tx_guard {
+                            Some(x) => {
+                                x.send(delta).unwrap();
+                            }
+                            None => {
+                                let mut child = children_guard[i].clone();
+
+                                let (tx, rx) = channel();
+                                *tx_guard = Some(tx);
+                                handles.push(thread::spawn(move || {
+                                    child.await_results(rx, delta);
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                // wait for all threads to finish
+                for handle in handles {
+                    handle
+                        .join()
+                        .expect("error: could not join backward pass threads");
+                }
+            }
+            None => {
+                if self.children.lock().unwrap().len() != 0 {
+                    panic!("error: operation is not differentiable")
+                }
+            }
+        }
+
+        if self.children.lock().unwrap().len() == 0 || self.keep_gradient {
+            let mut gradient_guard = self.gradient.lock().unwrap();
+            match &mut *gradient_guard {
+                Some(x) => *gradient_guard = Some(&*x + &delta),
+                None => *gradient_guard = Some(delta),
             }
         }
     }
@@ -490,6 +572,48 @@ impl Array {
         output_values
     }
 
+    /// Performs a matrix multiplication on two matrices, storing the result in `values`.
+    ///
+    /// # Arguments
+    ///
+    /// `values` - The result values slice.
+    /// `matmul_dimensions` - The dimensions to compute from: `(output_rows, output_cols, sum_len)`.
+    /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
+    /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
+    #[cfg(not(feature = "blas"))]
+    fn matmul_flat(
+        values: &mut [Float],
+        matmul_dimensions: (usize, usize, usize),
+        a: (&[Float], bool),
+        b: (&[Float], bool),
+    ) {
+        let (output_rows, output_cols, sum_len) = matmul_dimensions;
+        let (a, a_transpose) = a;
+        let (b, b_transpose) = b;
+        for r in 0..output_rows {
+            for j in 0..output_cols {
+                let mut sum = 0.0;
+                for k in 0..sum_len {
+                    let a_index = if a_transpose {
+                        k * output_rows + r
+                    } else {
+                        r * sum_len + k
+                    };
+
+                    let b_index = if b_transpose {
+                        j * sum_len + k
+                    } else {
+                        k * output_cols + j
+                    };
+
+                    sum += a[a_index] * b[b_index];
+                }
+
+                values[r * output_cols + j] = sum;
+            }
+        }
+    }
+
     /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
     ///
     /// # Arguments
@@ -505,19 +629,21 @@ impl Array {
         } else {
             &b.dimensions
         };
-
+        
         // TODO broadcasting - special case with single dimensions tensor
         // TODO OpenCL
-        let output_rows = if a.dimensions.len() < 2 {
+        let output_rows = if a.dimensions.len() < 2 && (!a_transpose || b.dimensions.len() < 2) {
             1
         } else {
             a.dimensions[a.dimensions.len() - if a_transpose { 1 } else { 2 }]
         };
-        let output_cols = if b.dimensions.len() < 2 {
+
+        let output_cols = if b.dimensions.len() < 2 && (b_transpose || a.dimensions.len() < 2) {
             1
         } else {
             b.dimensions[b.dimensions.len() - if b_transpose { 2 } else { 1 }]
         };
+
         let sum_len = {
             let a_index = if a_transpose { 2 } else { 1 };
             let b_index = if b_transpose { 1 } else { 2 };
@@ -591,9 +717,9 @@ impl Array {
 
             let backward_b = Box::new(move |c: &mut Vec<Array>, x: &Array| {
                 let result = if b_transpose {
-                    Array::matmul_values((x, true), (&c[0], a_transpose))
+                    Array::matmul_values((&x, true), (&c[0], a_transpose))
                 } else {
-                    Array::matmul_values((&c[0], !a_transpose), (x, false))
+                    Array::matmul_values((&c[0], !a_transpose), (&x, false))
                 };
 
                 result.flatten_to(Arc::clone(&c[1].dimensions))
@@ -615,6 +741,7 @@ impl Array {
         }
     }
 
+    /// Flattens the array by summing along dimensions to match the target dimensions.
     fn flatten_to(self, dimensions: Arc<Vec<usize>>) -> Array {
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
             for (i, output) in output_slice.iter_mut().enumerate() {
@@ -876,122 +1003,6 @@ impl Array {
     pub fn sum_all(&self) -> Float {
         self.values.iter().sum()
     }
-
-    /// Awaits for deltas from all consumers, then continues the backward pass.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the current node has no consumers (is an end node).
-    fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
-        let mut consumer_count = self.consumer_count.load(Ordering::Relaxed);
-        if consumer_count == 0 {
-            self.backward(Some(delta));
-            return;
-        }
-
-        let mut delta = Arc::try_unwrap(delta.values).unwrap_or_else(|x| (*x).clone());
-        consumer_count -= 1;
-        let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
-            acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
-        };
-
-        while consumer_count > 0 {
-            let received = rx.recv().unwrap();
-            consumer_count -= 1;
-            sum(&mut delta, &received.values);
-        }
-
-        self.consumer_count.store(0, Ordering::Relaxed);
-        *self.tx.lock().unwrap() = None;
-
-        let delta = Arrays::new((Arc::clone(&self.dimensions), Arc::new(delta)));
-        self.backward(Some(delta));
-    }
-
-    fn propagate_consumers(&mut self) {
-        for child in &mut *self.children.lock().unwrap() {
-            if child.tracked {
-                child.consumer_count.fetch_add(1, Ordering::Relaxed);
-                if child.consumer_count.load(Ordering::Relaxed) == 1 {
-                    child.propagate_consumers();
-                }
-            }
-        }
-    }
-
-    /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
-    pub fn backward(&mut self, delta: Option<Array>) {
-        let mut delta = match delta {
-            Some(x) => x,
-            None => {
-                self.propagate_consumers();
-                Arrays::new((
-                    Arc::clone(&self.dimensions),
-                    Arc::new(vec![1.0; self.values.len()]),
-                ))
-            }
-        };
-
-        match &self.backward_op {
-            Some(x) => {
-                let mut children_guard = self.children.lock().unwrap();
-
-                for child in &mut *children_guard {
-                    child.stop_tracking();
-                }
-
-                let delta = (*x)(&mut children_guard, &mut delta);
-
-                for child in &mut *children_guard {
-                    child.start_tracking();
-                }
-
-                let mut handles = Vec::new();
-                // start a new thread which will wait on all consumers
-                for (i, delta) in delta.into_iter().enumerate() {
-                    if let Some(delta) = delta {
-                        let mut tx_guard = children_guard[i].tx.lock().unwrap();
-                        match &*tx_guard {
-                            Some(x) => {
-                                x.send(delta).unwrap();
-                            }
-                            None => {
-                                let mut child = children_guard[i].clone();
-
-                                let (tx, rx) = channel();
-                                *tx_guard = Some(tx);
-                                handles.push(thread::spawn(move || {
-                                    child.await_results(rx, delta);
-                                }));
-                            }
-                        }
-                    }
-                }
-
-                // wait for all threads to finish
-                for handle in handles {
-                    handle
-                        .join()
-                        .expect("error: could not join backward pass threads");
-                }
-            }
-            None => {
-                if self.children.lock().unwrap().len() != 0 {
-                    panic!("error: operation is not differentiable")
-                }
-            }
-        }
-
-        let mut gradient_guard = self.gradient.lock().unwrap();
-        match &mut *gradient_guard {
-            Some(x) => *gradient_guard = Some(&*x + &delta),
-            None => *gradient_guard = Some(delta),
-        }
-    }
 }
 
 impl Clone for Array {
@@ -1009,6 +1020,7 @@ impl Clone for Array {
             backward_op,
             tx: Arc::clone(&self.tx),
             tracked: self.tracked,
+            keep_gradient: self.keep_gradient,
             gradient: self.gradient.clone(),
         }
     }
@@ -1017,6 +1029,43 @@ impl Clone for Array {
 impl PartialEq for Array {
     fn eq(&self, other: &Array) -> bool {
         *self.dimensions == *other.dimensions && *self.values == *other.values
+    }
+}
+
+impl AbsDiffEq for Array {
+    type Epsilon = <Float as AbsDiffEq>::Epsilon;
+
+    fn default_epsilon() -> <Float as AbsDiffEq>::Epsilon {
+        Float::default_epsilon()
+    }
+
+    fn abs_diff_eq(&self, other: &Array, epsilon: <Float as AbsDiffEq>::Epsilon) -> bool {
+        *self.dimensions == *other.dimensions
+            && self
+                .values
+                .iter()
+                .zip(other.values.iter())
+                .all(|(x, y)| Float::abs_diff_eq(x, y, epsilon))
+    }
+}
+
+impl RelativeEq for Array {
+    fn default_max_relative() -> <Float as AbsDiffEq>::Epsilon {
+        Float::default_max_relative()
+    }
+
+    fn relative_eq(
+        &self,
+        other: &Array,
+        epsilon: <Float as AbsDiffEq>::Epsilon,
+        max_relative: <Float as AbsDiffEq>::Epsilon,
+    ) -> bool {
+        *self.dimensions == *other.dimensions
+            && self
+                .values
+                .iter()
+                .zip(other.values.iter())
+                .all(|(x, y)| Float::relative_eq(x, y, epsilon, max_relative))
     }
 }
 
@@ -1415,7 +1464,7 @@ mod tests {
         let a = arr![(1.0 as Float).exp(), (2.0 as Float).exp()];
 
         let result = a.ln();
-        assert_eq!(result, arr![1.0, 2.0]);
+        assert_relative_eq!(result, arr![1.0, 2.0]);
     }
 
     #[test]
@@ -1424,7 +1473,7 @@ mod tests {
 
         let mut result = a.ln();
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
+        assert_relative_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
     }
 
     #[test]
@@ -1565,25 +1614,26 @@ mod tests {
     }
 
     #[test]
-    fn test_matmul_broadcast_dense() {
-        let a = arr![arr![arr![1.0], arr![2.0]], arr![arr![2.0], arr![1.0]]].tracked();
-        let b = arr![arr![1.0], arr![2.0]].tracked();
+    fn test_matmul_broadcast_vec() {
+        let a = arr![1.0, 2.0].tracked();
+        let b = arr![arr![2.0, 4.0]].tracked();
 
-        let mut result = Array::matmul((&a, false), (&b, true));
-        assert_eq!(
-            result,
-            arr![
-                arr![arr![1.0, 2.0], arr![2.0, 4.0]],
-                arr![arr![2.0, 4.0], arr![1.0, 2.0]]
-            ]
-        );
+        let mut result = Array::matmul((&a, true), (&b, false));
+        assert_eq!(result, arr![arr![2.0, 4.0], arr![4.0, 8.0]]);
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![arr![6.0], arr![6.0]]);
-        assert_eq!(
-            a.gradient().unwrap(),
-            arr![arr![arr![3.0], arr![3.0]], arr![arr![3.0], arr![3.0]]]
-        );
+        assert_eq!(b.gradient().unwrap(), arr![arr![3.0, 3.0]]);
+        assert_eq!(a.gradient().unwrap(), arr![6.0, 6.0]);
+    }
+
+    #[test]
+    fn test_matmul_broadcast_dense() {
+        let w = arr![arr![1.0, 2.0], arr![8.0, 2.0]].tracked();
+        let x = arr![5.0, 3.0];
+
+        let mut result = Array::matmul((&x, false), (&w, true));
+        result.backward(None);
+        assert_eq!(w.gradient().unwrap(), arr![arr![5.0, 3.0], arr![5.0, 3.0]]);
     }
 
     #[test]
@@ -1849,12 +1899,12 @@ mod tests {
         let c = a.sigmoid().tracked();
 
         let mut result = &c * &b;
-        assert_eq!(result, arr![arr![3.75]]);
+        assert_relative_eq!(result, arr![arr![3.75]]);
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
-        assert_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
+        assert_relative_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
+        assert_relative_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
+        assert_relative_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
     }
 
     #[test]

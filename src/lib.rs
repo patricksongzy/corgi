@@ -1,9 +1,13 @@
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 //! Machine learning, and dynamic automatic differentiation implementation.
 
 #[cfg(feature = "blas")]
 extern crate libc;
+
+#[cfg(test)]
+#[macro_use]
+extern crate approx;
 
 pub mod numbers;
 #[macro_use]
@@ -13,7 +17,7 @@ pub mod blas;
 pub mod layer;
 pub mod layers;
 pub mod model;
-pub mod nn_functions;
+pub mod nn;
 pub mod optimizer;
 pub mod optimizers;
 
