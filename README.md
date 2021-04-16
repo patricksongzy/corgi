@@ -24,6 +24,7 @@
 * Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
 
 ## Examples
+* For fully-connected examples, remember to call `model.update()`.
 * Fully-connected [MNIST](https://github.com/patricksongzy/corgi-sample/blob/main/src/main.rs) (convolutional neural networks are in-progress).
 * Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
 ```rust
@@ -38,20 +39,16 @@ let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
 for _ in 0..8 {
     let mut input = vec![0.0; input_size * batch_size];
     let mut target = vec![0.0; output_size * batch_size];
-    for j in 0..batch_size {
-	let x: Float = rng.gen_range(-1.0..1.0);
-	let y: Float = rng.gen_range(-1.0..1.0);
-	input[input_size * j] = x;
-	input[input_size * j + 1] = y;
-	target[output_size * j] = x.exp();
-	target[output_size * j + 1] = x.exp() + y.sin();
-    }
+
+    // set inputs, and targets
 
     let input = Arrays::new((vec![batch_size, input_size], input));
     let target = Arrays::new((vec![batch_size, output_size], target));
 
     let _result = model.forward(input.clone());
     let loss = model.backward(target.clone());
+    // update the parameters
+    model.update();
 
     println!("loss: {}", loss);
 }
