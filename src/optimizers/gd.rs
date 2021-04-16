@@ -22,7 +22,7 @@ impl Optimizer for GradientDescent {
             let gradient = parameter.gradient();
             if let Some(x) = gradient {
                 parameter.stop_tracking();
-                *parameter = &*parameter - &(&x * self.learning_rate);
+                *parameter = &*parameter + &(-self.learning_rate * &x);
                 parameter.start_tracking();
                 *parameter.gradient_mut() = None;
             }
