@@ -500,6 +500,14 @@ impl Array {
 
     /// Performs an operation on slices of arrays with a stride given by the products of each dimensions skipped.
     /// This is useful for broadcasting arrays to compatible dimensions.
+    ///
+    /// Takes in a vector of arrays, slicing them to meet `input_dimensions`, while skipping the
+    /// last `skip_size` dimensions, and performing the operation on the slices, which must have
+    /// length of the product of the skipped dimensions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if unable to broadcast the arrays to `input_dimensions`.
     fn sliced_op(
         arrays: Vec<&Array>,
         op: &SlicedOp,
@@ -854,6 +862,29 @@ impl Array {
         } else {
             let backward_op =
                 Arc::new(move |c: &mut Vec<Array>, x: &Array| vec![Some(&(&c[0] * 2.0) * x)]);
+
+            result
+                .with_children(vec![self.clone()])
+                .with_backward_op(Some(backward_op))
+        }
+    }
+
+    /// Computes the ReLU of the array, defined as max(0, x) for all elements x in the array.
+    pub fn relu(&self) -> Array {
+        let (values, derivative) = self
+            .values
+            .iter()
+            .map(|&x| if x > 0.0 { (x, 1.0) } else { (0.0, 0.0) })
+            .unzip();
+
+        let result = Arrays::new((Arc::clone(&self.dimensions), Arc::new(values)));
+        let derivative = Arrays::new((Arc::clone(&self.dimensions), Arc::new(derivative)));
+
+        if !self.tracked {
+            result
+        } else {
+            let backward_op =
+                Arc::new(move |_: &mut Vec<Array>, x: &Array| vec![Some(&derivative * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -1890,6 +1921,17 @@ mod tests {
             a.gradient().unwrap(),
             arr![arr![-0.5, 0.5], arr![-0.75, 0.75]]
         );
+    }
+
+    #[test]
+    fn test_backward_relu() {
+        let a = arr![1.0, -2.0, 0.0].tracked();
+
+        let mut result = a.relu();
+        assert_eq!(result, arr![1.0, 0.0, 0.0]);
+
+        result.backward(None);
+        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.0, 0.0]);
     }
 
     #[test]
