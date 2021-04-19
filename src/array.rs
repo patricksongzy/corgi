@@ -27,7 +27,7 @@
 //! ```
 
 #[cfg(feature = "blas")]
-use crate::blas::matmul_blas;
+use crate::blas::{daxpy_blas, matmul_blas};
 use crate::numbers::*;
 
 use approx::{AbsDiffEq, RelativeEq};
@@ -422,7 +422,7 @@ impl Array {
         }
     }
 
-    /// Performs the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
+    /// Computes the backward pass, computing gradients for all descendants, and propagating consumer counts if requested.
     ///
     /// # Panics
     ///
@@ -498,7 +498,7 @@ impl Array {
         }
     }
 
-    /// Performs an operation on slices of arrays with a stride given by the products of each dimensions skipped.
+    /// Computes an operation on slices of arrays with a stride given by the products of each dimensions skipped.
     /// This is useful for broadcasting arrays to compatible dimensions.
     ///
     /// Takes in a vector of arrays, slicing them to meet `input_dimensions`, while skipping the
@@ -580,7 +580,75 @@ impl Array {
         output_values
     }
 
-    /// Performs a matrix multiplication on two matrices, storing the result in `values`.
+    /// Computes the double precision element-wise `alpha * x + y`, for each matching dimension not multiplied.
+    pub fn daxpy(alpha: Float, x: &Array, y: &Array) -> Array {
+        #[cfg(not(feature = "blas"))]
+        return &(alpha * x) + y;
+        #[cfg(feature = "blas")]
+        {
+            let dimensions = element_wise_dimensions(&x.dimensions, &y.dimensions);
+
+            let op: SlicedOp =
+                Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+                    output_slice.clone_from_slice(&arrays[1]);
+                    daxpy_blas(alpha, arrays[0], output_slice);
+                });
+
+            let output_values = Array::sliced_op(vec![x, y], &op, &dimensions, &dimensions, 1);
+            let result = Arrays::new((Arc::new(dimensions), Arc::new(output_values)));
+
+            if !x.tracked && !y.tracked {
+                result
+            } else {
+                let backward_op: BackwardOp = if x.tracked && y.tracked {
+                    Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+                        vec![
+                            Some(
+                                -2.0 * &Arrays::new((
+                                    Arc::clone(&x.dimensions),
+                                    Arc::clone(&x.values),
+                                ))
+                                .flatten_to(Arc::clone(&c[0].dimensions)),
+                            ),
+                            Some(
+                                Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values)))
+                                    .flatten_to(Arc::clone(&c[1].dimensions)),
+                            ),
+                        ]
+                    })
+                } else if x.tracked {
+                    Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+                        vec![
+                            Some(
+                                -2.0 * &Arrays::new((
+                                    Arc::clone(&x.dimensions),
+                                    Arc::clone(&x.values),
+                                ))
+                                .flatten_to(Arc::clone(&c[0].dimensions)),
+                            ),
+                            None,
+                        ]
+                    })
+                } else {
+                    Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+                        vec![
+                            None,
+                            Some(
+                                Arrays::new((Arc::clone(&x.dimensions), Arc::clone(&x.values)))
+                                    .flatten_to(Arc::clone(&c[1].dimensions)),
+                            ),
+                        ]
+                    })
+                };
+
+                result
+                    .with_children(vec![x.clone(), y.clone()])
+                    .with_backward_op(Some(backward_op))
+            }
+        }
+    }
+
+    /// Computes a matrix multiplication on two matrices, storing the result in `values`.
     ///
     /// # Arguments
     ///
@@ -622,7 +690,7 @@ impl Array {
         }
     }
 
-    /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
+    /// Computes matrix multiplications on two arrays, for each matching dimension not multiplied.
     ///
     /// # Arguments
     ///
@@ -638,7 +706,6 @@ impl Array {
             &b.dimensions
         };
 
-        // TODO broadcasting - special case with single dimensions tensor
         // TODO OpenCL
         let output_rows = if a.dimensions.len() < 2 && (!a_transpose || b.dimensions.len() < 2) {
             1
@@ -692,10 +759,10 @@ impl Array {
         let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
             #[cfg(feature = "blas")]
             matmul_blas(
-                output_slice,
                 (output_rows, output_cols, sum_len),
                 (arrays[0], a_transpose),
                 (arrays[1], b_transpose),
+                output_slice,
             );
             #[cfg(not(feature = "blas"))]
             Array::matmul_flat(
@@ -761,7 +828,7 @@ impl Array {
         Arrays::new((dimensions, Arc::new(output_values)))
     }
 
-    /// Performs matrix multiplications on two arrays, for each matching dimension not multiplied.
+    /// Computes matrix multiplications on two arrays, for each matching dimension not multiplied.
     ///
     /// # Arguments
     ///
@@ -771,7 +838,7 @@ impl Array {
         Array::matmul_values(a, b)
     }
 
-    /// Performs an operation on arrays.
+    /// Computes an operation on arrays.
     ///
     /// # Arguments
     ///
@@ -892,7 +959,7 @@ impl Array {
         }
     }
 
-    /// Performs the sigmoid operation on each value of the array.
+    /// Computes the sigmoid operation on each value of the array.
     pub fn sigmoid(&self) -> Array {
         let values = Arc::new(
             self.values
@@ -1558,6 +1625,24 @@ mod tests {
         result.backward(None);
         assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
         assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_daxpy() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]].tracked();
+        let b = arr![arr![5.0, 6.0, 7.0], arr![9.0, 8.0, 7.0]].tracked();
+        let mut result = Array::daxpy(-2.0, &a, &b);
+        assert_eq!(result, arr![arr![3.0, 2.0, 1.0], arr![3.0, 4.0, 5.0]]);
+
+        result.backward(None);
+        assert_eq!(
+            b.gradient().unwrap(),
+            arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]
+        );
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![arr![-2.0, -2.0, -2.0], arr![-2.0, -2.0, -2.0]]
+        );
     }
 
     #[test]

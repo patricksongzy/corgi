@@ -82,7 +82,7 @@ mod tests {
         let epsilon = 1e-2;
         #[cfg(not(feature = "f32"))]
         let epsilon = 1e-7;
-        let learning_rate = 1.0;
+        let learning_rate = 0.0;
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
@@ -186,16 +186,16 @@ mod tests {
     #[test]
     fn test_model() {
         let mut rng = rand::thread_rng();
-        let learning_rate = 1.0;
+        let learning_rate = 0.1;
         let batch_size = 32;
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
         let initializer = initializer::make_he();
-        let sigmoid = activation::make_sigmoid();
+        let relu = activation::make_relu();
         let mse = cost::make_mse();
         let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
+        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(relu));
         let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
         let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
 
