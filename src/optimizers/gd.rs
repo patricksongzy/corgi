@@ -22,7 +22,12 @@ impl Optimizer for GradientDescent {
             let gradient = parameter.gradient();
             if let Some(x) = gradient {
                 parameter.stop_tracking();
-                *parameter = &*parameter + &(-self.learning_rate * &x);
+                // use crate::blas;
+                // let mut next = parameter.values().clone();
+                // blas::daxpy_blas(-self.learning_rate, &x.values(), &mut next);
+                // *parameter = Arrays::new((parameter.dimensions(), next)).tracked();
+                // *parameter = &*parameter + &(-self.learning_rate * &x);
+                *parameter = Array::daxpy(-self.learning_rate, &x, &*parameter);
                 parameter.start_tracking();
                 *parameter.gradient_mut() = None;
             }

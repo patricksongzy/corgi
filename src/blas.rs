@@ -23,6 +23,15 @@ use self::CBLAS_TRANSPOSE::*;
 
 #[link(name = "cblas")]
 extern "C" {
+    fn cblas_daxpy(
+        n: c_int,
+        alpha: c_double,
+        x: *const c_double,
+        inc_x: c_int,
+        y: *mut c_double,
+        inc_y: c_int,
+    );
+
     fn cblas_dgemm(
         layout: CBLAS_LAYOUT,
         trans_a: CBLAS_TRANSPOSE,
@@ -41,6 +50,19 @@ extern "C" {
     );
 }
 
+pub(crate) fn daxpy_blas(alpha: Float, x: &[Float], y: &mut [Float]) {
+    unsafe {
+        cblas_daxpy(
+            y.len().try_into().unwrap(),
+            alpha,
+            x.as_ptr(),
+            1,
+            y.as_mut_ptr(),
+            1,
+        );
+    }
+}
+
 /// Performs a matrix multiplication on two matrices, storing the result in `values`.
 ///
 /// # Arguments
@@ -50,10 +72,10 @@ extern "C" {
 /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
 /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
 pub(crate) fn matmul_blas(
-    values: &mut [Float],
     matmul_dimensions: (usize, usize, usize),
     a: (&[Float], bool),
     b: (&[Float], bool),
+    values: &mut [Float],
 ) {
     let (a, a_transpose) = a;
     let (b, b_transpose) = b;
@@ -101,11 +123,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_daxpy() {
+        let x = vec![1.0, 2.0, 3.0];
+        let mut y = vec![5.0, 6.0, 7.0];
+        daxpy_blas(-2.0, &x, &mut y);
+
+        assert_eq!(y, vec![3.0, 2.0, 1.0]);
+    }
+
+    #[test]
     fn test_dgemm() {
         let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let b = vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
         let mut c = vec![0.0; 4];
-        matmul_blas(&mut c, (2, 2, 3), (&a, false), (&b, false));
+        matmul_blas((2, 2, 3), (&a, false), (&b, false), &mut c);
 
         assert_eq!(c, vec![20.0, 14.0, 56.0, 41.0]);
     }
