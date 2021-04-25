@@ -76,7 +76,7 @@ impl From<Vec<Array>> for Array {
         dimensions.append(&mut (*contents.first().unwrap().dimensions).clone());
 
         // take ownership if possible, but clone otherwise
-        let values = contents 
+        let values = contents
             .into_iter()
             .map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten()
@@ -486,7 +486,8 @@ impl Array {
             return;
         }
 
-        let mut delta = Arc::try_unwrap(delta.flatten_to(Arc::clone(&self.dimensions)).values).unwrap_or_else(|x| (*x).clone());
+        let mut delta = Arc::try_unwrap(delta.flatten_to(Arc::clone(&self.dimensions)).values)
+            .unwrap_or_else(|x| (*x).clone());
         consumer_count -= 1;
         let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
             acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
@@ -495,7 +496,10 @@ impl Array {
         while consumer_count > 0 {
             let received = rx.recv().unwrap();
             consumer_count -= 1;
-            sum(&mut delta, &received.flatten_to(Arc::clone(&self.dimensions)).values);
+            sum(
+                &mut delta,
+                &received.flatten_to(Arc::clone(&self.dimensions)).values,
+            );
         }
 
         self.consumer_count.store(0, Ordering::Relaxed);
@@ -704,9 +708,10 @@ impl Array {
                                     Arc::clone(&x.values),
                                 )),
                             ),
-                            Some(
-                                Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                            ),
+                            Some(Array::from((
+                                Arc::clone(&x.dimensions),
+                                Arc::clone(&x.values),
+                            ))),
                         ]
                     })
                 } else if x.tracked {
@@ -725,9 +730,10 @@ impl Array {
                     Arc::new(move |_, x| {
                         vec![
                             None,
-                            Some(
-                                Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                            ),
+                            Some(Array::from((
+                                Arc::clone(&x.dimensions),
+                                Arc::clone(&x.values),
+                            ))),
                         ]
                     })
                 };
@@ -888,9 +894,7 @@ impl Array {
             });
 
             let backward_op: BackwardOp = if a.tracked && b.tracked {
-                Arc::new(move |c, x| {
-                    vec![Some(backward_a(c, x)), Some(backward_b(c, x))]
-                })
+                Arc::new(move |c, x| vec![Some(backward_a(c, x)), Some(backward_b(c, x))])
             } else if a.tracked {
                 Arc::new(move |c, x| vec![Some(backward_a(c, x)), None])
             } else {
@@ -995,9 +999,8 @@ impl Array {
         if !self.tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(|c, x| {
-                vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]
-            });
+            let backward_op: BackwardOp =
+                Arc::new(|c, x| vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -1158,12 +1161,11 @@ impl Array {
             result
         } else {
             let backward_op: BackwardOp = Arc::new(move |c, x| {
-                let op: SlicedOp =
-                    Box::new(move |output_slice, arrays| {
-                        for output in output_slice.iter_mut() {
-                            *output = arrays[0][0];
-                        }
-                    });
+                let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                    for output in output_slice.iter_mut() {
+                        *output = arrays[0][0];
+                    }
+                });
 
                 let output_values = Array::sliced_op(
                     vec![&x],
@@ -1373,20 +1375,23 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
             let backward_op: BackwardOp = if self.tracked && other.tracked {
                 Arc::new(move |_, x| {
                     vec![
-                        Some(
-                            Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                        ),
-                        Some(
-                            Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                        ),
+                        Some(Array::from((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
+                        Some(Array::from((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
                     ]
                 })
             } else if self.tracked {
                 Arc::new(move |_, x| {
                     vec![
-                        Some(
-                            Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                        ),
+                        Some(Array::from((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
                         None,
                     ]
                 })
@@ -1394,9 +1399,10 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
                 Arc::new(move |_, x| {
                     vec![
                         None,
-                        Some(
-                            Array::from((Arc::clone(&x.dimensions), Arc::clone(&x.values))),
-                        ),
+                        Some(Array::from((
+                            Arc::clone(&x.dimensions),
+                            Arc::clone(&x.values),
+                        ))),
                     ]
                 })
             };
@@ -1488,26 +1494,11 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
             result
         } else {
             let backward_op: BackwardOp = if self.tracked && other.tracked {
-                Arc::new(|c, x| {
-                    vec![
-                        Some(&c[1] * x),
-                        Some(&c[0] * x),
-                    ]
-                })
+                Arc::new(|c, x| vec![Some(&c[1] * x), Some(&c[0] * x)])
             } else if self.tracked {
-                Arc::new(|c, x| {
-                    vec![
-                        Some(&c[1] * x),
-                        None,
-                    ]
-                })
+                Arc::new(|c, x| vec![Some(&c[1] * x), None])
             } else {
-                Arc::new(|c, x| {
-                    vec![
-                        None,
-                        Some(&c[0] * x),
-                    ]
-                })
+                Arc::new(|c, x| vec![None, Some(&c[0] * x)])
             };
 
             result
