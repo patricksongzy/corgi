@@ -18,16 +18,27 @@ impl GradientDescent {
 
 impl Optimizer for GradientDescent {
     fn update(&self, parameters: Vec<&mut Array>) {
+        // let (values, gradients): (Vec<_>, Vec<_>) = parameters.iter().map(|p| {
+        //     let gradient = p.gradient();
+        //     if let Some(x) = gradient {
+        //         (p.values().clone(), x.values().clone())
+        //     } else {
+        //         (p.values().clone(), vec![0.0; p.values().len()])
+        //     }
+        // }).unzip();
+
+        // let (mut values, gradients): (Vec<Float>, Vec<Float>) = (values.into_iter().flatten().collect(), gradients.into_iter().flatten().collect());
+
+        // Array::axpy(-self.learning_rate, &gradients, &values);
+        // use crate::blas::daxpy_blas;
+        // daxpy_blas(-self.learning_rate, &gradients, &mut values);
+
         for parameter in parameters {
+            // *parameter = Arrays::new((parameter.dimensions(), values.drain(0..parameter.values().len()).collect()));
             let gradient = parameter.gradient();
             if let Some(x) = gradient {
                 parameter.stop_tracking();
-                // use crate::blas;
-                // let mut next = parameter.values().clone();
-                // blas::daxpy_blas(-self.learning_rate, &x.values(), &mut next);
-                // *parameter = Arrays::new((parameter.dimensions(), next)).tracked();
-                // *parameter = &*parameter + &(-self.learning_rate * &x);
-                *parameter = Array::daxpy(-self.learning_rate, &x, &*parameter);
+                *parameter = Array::axpy(-self.learning_rate, &x, &*parameter);
                 parameter.start_tracking();
                 *parameter.gradient_mut() = None;
             }
