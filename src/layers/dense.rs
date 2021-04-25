@@ -22,14 +22,14 @@ impl Dense {
         activation: Option<Activation>,
     ) -> Dense {
         Dense {
-            weights: Arrays::new((
+            weights: Array::from((
                 vec![output_size, input_size],
                 (0..input_size * output_size)
                     .map(|_| (*initializer)(input_size as Float))
                     .collect::<Vec<Float>>(),
             ))
             .tracked(),
-            biases: Arrays::new((
+            biases: Array::from((
                 vec![output_size],
                 (0..output_size)
                     .map(|_| (*initializer)(input_size as Float))

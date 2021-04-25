@@ -130,7 +130,7 @@ mod tests {
             for j in 0..value_length {
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
-                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -144,7 +144,7 @@ mod tests {
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = -2.0 * epsilon;
-                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -158,7 +158,7 @@ mod tests {
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
-                let delta = Arrays::new((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -211,8 +211,8 @@ mod tests {
                 target[output_size * j + 1] = x.exp() + y.sin();
             }
 
-            let input = Arrays::new((vec![batch_size, input_size], input));
-            let target = Arrays::new((vec![batch_size, output_size], target));
+            let input = Array::from((vec![batch_size, input_size], input));
+            let target = Array::from((vec![batch_size, output_size], target));
 
             let _result = model.forward(input.clone());
             let loss = model.backward(target.clone());

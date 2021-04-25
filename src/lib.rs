@@ -33,7 +33,7 @@ mod tests {
     #[test]
     fn test_op() {
         let op: array::ForwardOp = Arc::new(|x: &[&Array]| {
-            Arrays::new((
+            Array::from((
                 x[0].dimensions(),
                 x[0].values()
                     .iter()

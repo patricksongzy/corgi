@@ -30,25 +30,27 @@
 * Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
 ```rust
 let initializer = initializer::make_he();
-let sigmoid = activation::make_sigmoid();
-let mse = cost::make_mse();
+let relu = activation::make_relu();
+let softmax = activation::make_softmax();
+let ce = cost::make_cross_entropy();
 let gd = GradientDescent::new(learning_rate);
-let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(sigmoid));
-let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
-let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
+let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(relu));
+let l2 = Dense::new(hidden_size, output_size, initializer.clone(), Some(softmax));
+let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), ce);
 
-for _ in 0..8 {
+for _ in 0..iterations {
     let mut input = vec![0.0; input_size * batch_size];
     let mut target = vec![0.0; output_size * batch_size];
 
     // set inputs, and targets
 
-    let input = Arrays::new((vec![batch_size, input_size], input));
-    let target = Arrays::new((vec![batch_size, output_size], target));
+    // arrays in corgi should not be mutated after creation, so we initialise the values first
+    let input = Array::from((vec![batch_size, input_size], input));
+    let target = Array::from((vec![batch_size, output_size], target));
 
     let _result = model.forward(input.clone());
     let loss = model.backward(target.clone());
-    // update the parameters
+    // update the parameters, and clear gradients (backward pass only sets gradients)
     model.update();
 
     println!("loss: {}", loss);
@@ -78,7 +80,7 @@ assert_eq!(a.gradient(), arr![232420.0]);
 ```rust
 // note proper implementations should handle tracked, and untracked cases
 let op: array::ForwardOp = Arc::new(|x: &[&Array]| {
-    Arrays::new((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
+    Array::from((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
 });
 
 let op_clone = Arc::clone(&op);
