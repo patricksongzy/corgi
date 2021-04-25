@@ -179,6 +179,7 @@ impl Into<Vec<Float>> for Array {
 
 // TODO more ergonomic Array creation
 /// Helper trait to construct `Array` structs.
+#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
 pub trait Arrays {
     /// Constructs a new `Array`.
     fn new(self) -> Array;
@@ -198,7 +199,7 @@ pub trait Arrays {
 /// assert_eq!(a[vec![1, 2]], 6.0);
 /// # }
 /// ```
-#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
+#[allow(deprecated)]
 impl Arrays for Vec<Array> {
     fn new(self) -> Array {
         Array::from(self)
@@ -217,7 +218,7 @@ impl Arrays for Vec<Array> {
 /// assert_eq!(a[vec![5]], 6.0);
 /// # }
 /// ```
-#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
+#[allow(deprecated)]
 impl Arrays for Vec<Float> {
     fn new(self) -> Array {
         Array::from(self)
@@ -236,7 +237,7 @@ impl Arrays for Vec<Float> {
 /// assert_eq!(a[vec![2, 1, 1]], 0.0);
 /// # }
 /// ```
-#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
+#[allow(deprecated)]
 impl Arrays for Vec<usize> {
     fn new(self) -> Array {
         Array::from(self)
@@ -256,7 +257,7 @@ impl Arrays for Vec<usize> {
 /// assert_eq!(a[vec![1, 2]], 6.0);
 /// # }
 /// ```
-#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
+#[allow(deprecated)]
 impl Arrays for (Vec<usize>, Vec<Float>) {
     fn new(self) -> Array {
         Array::from(self)
@@ -277,7 +278,7 @@ impl Arrays for (Vec<usize>, Vec<Float>) {
 /// assert_eq!(a[vec![1, 2]], 6.0);
 /// # }
 /// ```
-#[deprecated(since = "0.8.5", note = "please use 'Array::from' instead")]
+#[allow(deprecated)]
 impl Arrays for (Arc<Vec<usize>>, Arc<Vec<Float>>) {
     fn new(self) -> Array {
         Array::from(self)
