@@ -65,6 +65,9 @@ pub mod cost {
 
     /// Creates a cross-entropy loss closure.
     pub fn make_cross_entropy() -> CostFunction {
-        Arc::new(|output, target| &(-target) * &output.ln())
+        Arc::new(|output, target| {
+            let batch_size: usize = output.dimensions()[0];
+            (1.0 / batch_size as Float) * &(&(-target) * &output.ln())
+        })
     }
 }

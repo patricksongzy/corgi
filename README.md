@@ -116,7 +116,7 @@ assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
 
 ## Name
 * Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).
-But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' sounded awkward, such as 'cogi', for 'cog-intelligence',
+But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' with other words sounded awkward, such as 'cogi', for 'cog-intelligence',
 so the name Corgi was chosen.
 
 ## Acknowledgements
