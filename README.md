@@ -22,7 +22,7 @@
 ## Important Design Notes
 * Array values should never be modified from operations; instead, new arrays should be created.
 * Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
-* Versions 0.x.y of Corgi are considered unstable, so check the releases page on Github for new versions.
+* Versions 0.y.z of Corgi are considered unstable, so check the releases page on Github for new versions.
 
 ## Examples
 * For fully-connected examples, remember to call `model.update()`.
