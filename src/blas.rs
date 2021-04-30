@@ -5,7 +5,12 @@ use crate::numbers::*;
 
 use std::convert::TryInto;
 
-use libc::{c_double, c_int};
+#[cfg(feature = "f32")]
+use libc::c_float;
+#[cfg(not(feature = "f32"))]
+use libc::c_double;
+
+use libc::c_int;
 
 #[repr(C)]
 enum CBLAS_LAYOUT {
@@ -23,6 +28,7 @@ use self::CBLAS_TRANSPOSE::*;
 
 #[link(name = "cblas")]
 extern "C" {
+    #[cfg(not(feature = "f32"))]
     fn cblas_daxpy(
         n: c_int,
         alpha: c_double,
@@ -32,6 +38,17 @@ extern "C" {
         inc_y: c_int,
     );
 
+    #[cfg(feature = "f32")]
+    fn cblas_saxpy(
+        n: c_int,
+        alpha: c_float,
+        x: *const c_float,
+        inc_x: c_int,
+        y: *mut c_float,
+        inc_y: c_int,
+    );
+
+    #[cfg(not(feature = "f32"))]
     fn cblas_dgemm(
         layout: CBLAS_LAYOUT,
         trans_a: CBLAS_TRANSPOSE,
@@ -48,11 +65,39 @@ extern "C" {
         c: *mut c_double,
         ldc: c_int,
     );
+
+    #[cfg(feature = "f32")]
+    fn cblas_sgemm(
+        layout: CBLAS_LAYOUT,
+        trans_a: CBLAS_TRANSPOSE,
+        trans_b: CBLAS_TRANSPOSE,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: c_float,
+        a: *const c_float,
+        lda: c_int,
+        b: *const c_float,
+        ldb: c_int,
+        beta: c_float,
+        c: *mut c_float,
+        ldc: c_int,
+    );
 }
 
 pub(crate) fn daxpy_blas(alpha: Float, x: &[Float], y: &mut [Float]) {
     unsafe {
+        #[cfg(not(feature = "f32"))]
         cblas_daxpy(
+            y.len().try_into().unwrap(),
+            alpha,
+            x.as_ptr(),
+            1,
+            y.as_mut_ptr(),
+            1,
+        );
+        #[cfg(feature = "f32")]
+        cblas_saxpy(
             y.len().try_into().unwrap(),
             alpha,
             x.as_ptr(),
@@ -99,7 +144,25 @@ pub(crate) fn matmul_blas(
     };
 
     unsafe {
+        #[cfg(not(feature = "f32"))]
         cblas_dgemm(
+            RowMajor,
+            a_transpose,
+            b_transpose,
+            output_rows,
+            output_cols,
+            sum_len,
+            1.0,
+            a.as_ptr(),
+            lda,
+            b.as_ptr(),
+            ldb,
+            0.0,
+            values.as_mut_ptr(),
+            output_cols,
+        );
+        #[cfg(feature = "f32")]
+        cblas_sgemm(
             RowMajor,
             a_transpose,
             b_transpose,
