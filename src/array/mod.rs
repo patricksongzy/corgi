@@ -183,7 +183,7 @@ type SlicedOp = Box<dyn Fn(&mut [Float], Vec<&[Float]>)>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 /// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &Array) -> Vec<Option<Array>> + Send + Sync>;
+pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>> + Send + Sync>;
 
 /// An n-dimensional differentiable array. Stored in row-major order.
 ///
@@ -429,6 +429,7 @@ impl Array {
         self.backward(Some(delta));
     }
 
+    /// Propagates the number of consumers to each array in the graph.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
             if child.is_tracked {
@@ -462,16 +463,17 @@ impl Array {
             Some(x) => {
                 let mut children_guard = self.children.lock().unwrap();
 
-                for child in &mut *children_guard {
-                    child.stop_tracking();
-                }
+                // TODO some closure to simplify tracked, and untracked operations
+                let is_tracked: Vec<bool> = children_guard.iter_mut().map(|c| {
+                    let is_tracked = c.is_tracked;
+                    c.stop_tracking();
+                    is_tracked
+                }).collect();
 
-                let delta = (*x)(&mut children_guard, &mut delta);
+                let delta = (*x)(&mut children_guard, &is_tracked, &mut delta);
 
-                for child in &mut *children_guard {
-                    child.start_tracking();
-                }
-
+                children_guard.iter_mut().zip(is_tracked).filter(|(_, t)| *t).for_each(|(c, _)| c.start_tracking());
+                
                 let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
@@ -634,22 +636,29 @@ impl Array {
     /// # use corgi::numbers::*;
     /// # use corgi::array::*;
     /// # fn main () {
-    /// let op: ForwardOp = Arc::new(|x: &[&Array]| {
+    /// let mul: ForwardOp = Arc::new(|x: &[&Array]| {
     ///     Array::from((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
     /// });
     ///
-    /// let op_clone = Arc::clone(&op);
-    /// let backward_op: BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &Array| {
+    /// let mul_clone = Arc::clone(&mul);
+    /// let backward_op: BackwardOp = Arc::new(move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
     ///     vec![
-    ///         Some(Array::op(&[&c[1], x], Arc::clone(&op_clone), None)),
-    ///         Some(Array::op(&[&c[0], x], Arc::clone(&op_clone), None)),
+    ///         if is_tracked[0] {
+    ///             Some(Array::op(&[&children[1], delta], Arc::clone(&mul_clone), None))
+    ///         } else {
+    ///             None
+    ///         },
+    ///         if is_tracked[1] {
+    ///             Some(Array::op(&[&children[0], delta], Arc::clone(&mul_clone), None))
+    ///         } else {
+    ///             None
+    ///         }
     ///     ]
     /// });
     ///
-    /// let a = arr![1.0, 2.0, 3.0];
-    /// let b = arr![3.0, 2.0, 1.0];
-    ///
-    /// let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
+    /// let a = arr![1.0, 2.0, 3.0].tracked();
+    /// let b = arr![3.0, 2.0, 1.0].tracked();
+    /// let mut product = Array::op(&vec![&a, &b], mul, Some(backward_op));
     /// assert_eq!(product, arr![3.0, 4.0, 3.0]);
     /// product.backward(None);
     /// assert_eq!(product.gradient().unwrap(), arr![1.0, 1.0, 1.0]);
@@ -660,16 +669,7 @@ impl Array {
     pub fn op(arrays: &[&Array], op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
         let result = op(arrays);
         result
-            .with_children(
-                arrays
-                    .iter()
-                    .map(|v| {
-                        let mut result = (*v).clone();
-                        result.is_tracked = v.is_tracked;
-                        result
-                    })
-                    .collect(),
-            )
+            .with_children(arrays.iter().map(|v| (*v).clone()).collect())
             .with_backward_op(backward_op)
     }
 
@@ -687,7 +687,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, x| vec![Some(&derivative * x)]);
+            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(&derivative * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -710,7 +710,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, x| {
+            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
                 let values = arithmetic::mul_values(
                     &cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(),
                     &x.values,
@@ -1027,7 +1027,7 @@ mod tests {
 
         let product = &a * &b;
         let result =
-            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &mut arr![1.0]);
+            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &[true, true], &mut arr![1.0]);
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -1041,18 +1041,6 @@ mod tests {
         assert!(a.is_tracked);
         assert!(b.is_tracked);
         assert!(product.is_tracked);
-    }
-
-    #[test]
-    fn test_backward_untracked() {
-        let a = arr![5.0];
-        let b = arr![2.0].tracked();
-
-        let mut product = &a * &b;
-
-        product.backward(None);
-        assert_eq!(product.gradient().unwrap(), arr![1.0]);
-        assert_eq!(b.gradient().unwrap(), arr![5.0]);
     }
 
     #[test]
@@ -1197,5 +1185,28 @@ mod tests {
         b.backward(None);
         assert_eq!(b.gradient().unwrap(), arr![1.0, 1.0]);
         assert_eq!(a.gradient().unwrap(), arr![15.0, 30.0]);
+    }
+
+    #[test]
+    fn test_backward_untracked() {
+        let a = arr![1.0, 2.0].tracked();
+        let b = arr![2.0, 1.0];
+        let mut product = &a * &b;
+
+        product.backward(None);
+        assert!(b.gradient().is_none());
+        assert!(a.gradient().is_some());
+    }
+
+    #[test]
+    fn test_backward_untracked_clone() {
+        let a = arr![1.0, 2.0].tracked();
+        let b = arr![2.0, 1.0];
+        let product = &a * &b;
+        let mut clone = product.clone();
+
+        clone.backward(None);
+        assert!(b.gradient().is_none());
+        assert!(a.gradient().is_some());
     }
 }

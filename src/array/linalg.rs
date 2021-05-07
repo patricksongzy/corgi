@@ -25,44 +25,28 @@ impl Array {
             if !x.is_tracked && !y.is_tracked {
                 result
             } else {
-                let backward_op: BackwardOp = if x.is_tracked && y.is_tracked {
-                    Arc::new(move |_, x| {
-                        vec![
+                let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+                    vec![
+                        if t[0] {
                             Some(
                                 -2.0 * &Array::from((
                                     Arc::clone(&x.dimensions),
                                     Arc::clone(&x.values),
                                 )),
-                            ),
+                            )
+                        } else {
+                            None
+                        },
+                        if t[1] {
                             Some(Array::from((
                                 Arc::clone(&x.dimensions),
                                 Arc::clone(&x.values),
-                            ))),
-                        ]
-                    })
-                } else if x.is_tracked {
-                    Arc::new(move |_, x| {
-                        vec![
-                            Some(
-                                -2.0 * &Array::from((
-                                    Arc::clone(&x.dimensions),
-                                    Arc::clone(&x.values),
-                                )),
-                            ),
-                            None,
-                        ]
-                    })
-                } else {
-                    Arc::new(move |_, x| {
-                        vec![
-                            None,
-                            Some(Array::from((
-                                Arc::clone(&x.dimensions),
-                                Arc::clone(&x.values),
-                            ))),
-                        ]
-                    })
-                };
+                            )))
+                        } else {
+                            None
+                        },
+                    ]
+                });
 
                 result
                     .with_children(vec![x.clone(), y.clone()])
@@ -219,13 +203,20 @@ impl Array {
                 }
             });
 
-            let backward_op: BackwardOp = if a.is_tracked && b.is_tracked {
-                Arc::new(move |c, x| vec![Some(backward_a(c, x)), Some(backward_b(c, x))])
-            } else if a.is_tracked {
-                Arc::new(move |c, x| vec![Some(backward_a(c, x)), None])
-            } else {
-                Arc::new(move |c, x| vec![None, Some(backward_b(c, x))])
-            };
+            let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+                vec![
+                    if t[0] {
+                        Some(backward_a(c, x))
+                    } else {
+                        None
+                    },
+                    if t[1] {
+                        Some(backward_b(c, x))
+                    } else {
+                        None
+                    },
+                ]
+            });
 
             result
                 .with_children(vec![a.clone(), b.clone()])

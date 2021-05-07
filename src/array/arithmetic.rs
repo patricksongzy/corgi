@@ -19,7 +19,7 @@ impl Array {
             result
         } else {
             let backward_op: BackwardOp =
-                Arc::new(|c, x| vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]);
+                Arc::new(|c, _, x| vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -40,7 +40,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, x| vec![Some(&(&c[0] * 2.0) * x)]);
+            let backward_op: BackwardOp = Arc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -56,7 +56,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(|c, x| vec![Some(x * &c[0].reciprocal())]);
+            let backward_op: BackwardOp = Arc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
 
             result
                 .with_children(vec![self.clone()])
@@ -74,7 +74,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, x| {
+            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
                 vec![Some(Array::from((
                     Arc::clone(&c[0].dimensions),
                     Arc::new(mul_values(&x.values, &cached)),
@@ -120,7 +120,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, x| {
+            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
                 let op: SlicedOp = Box::new(move |output_slice, arrays| {
                     for output in output_slice.iter_mut() {
                         *output = arrays[0][0];
@@ -172,40 +172,26 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
         if !self.is_tracked && !other.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = if self.is_tracked && other.is_tracked {
-                Arc::new(move |_, x| {
-                    vec![
+            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+                vec![
+                    if t[0] {
                         Some(Array::from((
                             Arc::clone(&x.dimensions),
                             Arc::clone(&x.values),
-                        ))),
+                        )))
+                    } else {
+                        None
+                    },
+                    if t[1] {
                         Some(Array::from((
                             Arc::clone(&x.dimensions),
                             Arc::clone(&x.values),
-                        ))),
-                    ]
-                })
-            } else if self.is_tracked {
-                Arc::new(move |_, x| {
-                    vec![
-                        Some(Array::from((
-                            Arc::clone(&x.dimensions),
-                            Arc::clone(&x.values),
-                        ))),
-                        None,
-                    ]
-                })
-            } else {
-                Arc::new(move |_, x| {
-                    vec![
-                        None,
-                        Some(Array::from((
-                            Arc::clone(&x.dimensions),
-                            Arc::clone(&x.values),
-                        ))),
-                    ]
-                })
-            };
+                        )))
+                    } else {
+                        None
+                    },
+                ]
+            });
 
             result
                 .with_children(vec![self.clone(), other.clone()])
@@ -236,7 +222,7 @@ impl<'a> ops::Neg for &'a Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, x| vec![Some(-x)]);
+            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(-x)]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(Some(backward_op))
@@ -266,7 +252,7 @@ impl<'a> ops::Mul<Float> for &'a Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, x| vec![Some(x * other)]);
+            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(x * other)]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(Some(backward_op))
@@ -293,13 +279,20 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         if !self.is_tracked && !other.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = if self.is_tracked && other.is_tracked {
-                Arc::new(|c, x| vec![Some(&c[1] * x), Some(&c[0] * x)])
-            } else if self.is_tracked {
-                Arc::new(|c, x| vec![Some(&c[1] * x), None])
-            } else {
-                Arc::new(|c, x| vec![None, Some(&c[0] * x)])
-            };
+            let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+                vec![
+                    if t[0] {
+                        Some(&c[1] * x)
+                    } else {
+                        None
+                    },
+                    if t[1] {
+                        Some(&c[0] * x)
+                    } else {
+                        None
+                    },
+                ]
+            });
 
             result
                 .with_children(vec![self.clone(), other.clone()])
@@ -443,7 +436,7 @@ mod tests {
         assert_eq!(a.sum(2), arr![arr![21.0], arr![42.0]]);
 
         let mut result = 2.0 * &a.sum(2);
-                result.backward(None);
+        result.backward(None);
 
         let gradient_expect = arr![
             arr![arr![2.0, 2.0, 2.0], arr![2.0, 2.0, 2.0]],

@@ -76,27 +76,7 @@ assert_eq!(c.gradient(), arr![1.0]);
 assert_eq!(b.gradient(), arr![97650.0]);
 assert_eq!(a.gradient(), arr![232420.0]);
 ```
-* Custom operation (still needs some work):
-```rust
-// note proper implementations should handle tracked, and untracked cases
-let op: array::ForwardOp = Arc::new(|x: &[&Array]| {
-    Array::from((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
-});
-
-let op_clone = Arc::clone(&op);
-let backward_op: array::BackwardOp = Arc::new(move |c: &mut Vec<Array>, x: &Array| {
-    vec![Some(Array::op(&vec![&c[1], x], Arc::clone(&op_clone), None)),
-         Some(Array::op(&vec![&c[0], x], Arc::clone(&op_clone), None))]
-});
-
-let a = arr![1.0, 2.0, 3.0].tracked();
-let b = arr![3.0, 2.0, 1.0].tracked();
-let mut product = Array::op(&vec![&a, &b], op, Some(backward_op));
-assert_eq!(product, arr![3.0, 4.0, 3.0]);
-product.backward(None);
-assert_eq!(b.gradient(), arr![1.0, 2.0, 3.0]);
-assert_eq!(a.gradient(), arr![3.0, 2.0, 1.0]);
-```
+* [Custom operation](https://github.com/patricksongzy/corgi/blob/main/src/lib.rs#L34) (still needs some work).
 
 ## Design
 * Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).

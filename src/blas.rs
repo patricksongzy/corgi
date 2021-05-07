@@ -5,10 +5,10 @@ use crate::numbers::*;
 
 use std::convert::TryInto;
 
-#[cfg(feature = "f32")]
-use libc::c_float;
 #[cfg(not(feature = "f32"))]
 use libc::c_double;
+#[cfg(feature = "f32")]
+use libc::c_float;
 
 use libc::c_int;
 
