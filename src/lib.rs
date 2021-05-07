@@ -44,20 +44,30 @@ mod tests {
         });
 
         let mul_clone = Arc::clone(&mul);
-        let backward_op: array::BackwardOp = Arc::new(move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
-            vec![
-                if is_tracked[0] {
-                    Some(Array::op(&vec![&children[1], delta], Arc::clone(&mul_clone), None))
-                } else {
-                    None
-                },
-                if is_tracked[1] {
-                    Some(Array::op(&vec![&children[0], delta], Arc::clone(&mul_clone), None))
-                } else {
-                    None
-                }
-            ]
-        });
+        let backward_op: array::BackwardOp = Arc::new(
+            move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
+                vec![
+                    if is_tracked[0] {
+                        Some(Array::op(
+                            &vec![&children[1], delta],
+                            Arc::clone(&mul_clone),
+                            None,
+                        ))
+                    } else {
+                        None
+                    },
+                    if is_tracked[1] {
+                        Some(Array::op(
+                            &vec![&children[0], delta],
+                            Arc::clone(&mul_clone),
+                            None,
+                        ))
+                    } else {
+                        None
+                    },
+                ]
+            },
+        );
 
         let a = arr![1.0, 2.0, 3.0].tracked();
         let b = arr![3.0, 2.0, 1.0].tracked();

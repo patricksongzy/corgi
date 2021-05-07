@@ -281,16 +281,8 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         } else {
             let backward_op: BackwardOp = Arc::new(move |c, t, x| {
                 vec![
-                    if t[0] {
-                        Some(&c[1] * x)
-                    } else {
-                        None
-                    },
-                    if t[1] {
-                        Some(&c[0] * x)
-                    } else {
-                        None
-                    },
+                    if t[0] { Some(&c[1] * x) } else { None },
+                    if t[1] { Some(&c[0] * x) } else { None },
                 ]
             });
 

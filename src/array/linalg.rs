@@ -205,16 +205,8 @@ impl Array {
 
             let backward_op: BackwardOp = Arc::new(move |c, t, x| {
                 vec![
-                    if t[0] {
-                        Some(backward_a(c, x))
-                    } else {
-                        None
-                    },
-                    if t[1] {
-                        Some(backward_b(c, x))
-                    } else {
-                        None
-                    },
+                    if t[0] { Some(backward_a(c, x)) } else { None },
+                    if t[1] { Some(backward_b(c, x)) } else { None },
                 ]
             });
 

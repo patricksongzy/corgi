@@ -183,7 +183,8 @@ type SlicedOp = Box<dyn Fn(&mut [Float], Vec<&[Float]>)>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
 /// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp = Arc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>> + Send + Sync>;
+pub type BackwardOp =
+    Arc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>> + Send + Sync>;
 
 /// An n-dimensional differentiable array. Stored in row-major order.
 ///
@@ -464,16 +465,23 @@ impl Array {
                 let mut children_guard = self.children.lock().unwrap();
 
                 // TODO some closure to simplify tracked, and untracked operations
-                let is_tracked: Vec<bool> = children_guard.iter_mut().map(|c| {
-                    let is_tracked = c.is_tracked;
-                    c.stop_tracking();
-                    is_tracked
-                }).collect();
+                let is_tracked: Vec<bool> = children_guard
+                    .iter_mut()
+                    .map(|c| {
+                        let is_tracked = c.is_tracked;
+                        c.stop_tracking();
+                        is_tracked
+                    })
+                    .collect();
 
                 let delta = (*x)(&mut children_guard, &is_tracked, &mut delta);
 
-                children_guard.iter_mut().zip(is_tracked).filter(|(_, t)| *t).for_each(|(c, _)| c.start_tracking());
-                
+                children_guard
+                    .iter_mut()
+                    .zip(is_tracked)
+                    .filter(|(_, t)| *t)
+                    .for_each(|(c, _)| c.start_tracking());
+
                 let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
@@ -1026,8 +1034,11 @@ mod tests {
         let b = arr![2.0].tracked();
 
         let product = &a * &b;
-        let result =
-            (*product.backward_op.unwrap())(&mut vec![a.clone(), b.clone()], &[true, true], &mut arr![1.0]);
+        let result = (*product.backward_op.unwrap())(
+            &mut vec![a.clone(), b.clone()],
+            &[true, true],
+            &mut arr![1.0],
+        );
 
         assert_eq!(result.len(), 2);
         assert_eq!(
