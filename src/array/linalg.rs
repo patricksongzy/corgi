@@ -19,13 +19,10 @@ impl Array {
                     daxpy_blas(alpha, arrays[0], output_slice);
                 });
 
-            let output_values = Array::sliced_op(vec![x, y], &op, &dimensions, &dimensions, 1);
-            let result = Array::from((Arc::new(dimensions), Arc::new(output_values)));
-
-            if !x.is_tracked && !y.is_tracked {
-                result
+            let backward_op: Option<BackwardOp> = if !x.is_tracked && !y.is_tracked {
+                None
             } else {
-                let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+                Some(Arc::new(move |_, t, x| {
                     vec![
                         if t[0] {
                             Some(
@@ -46,12 +43,10 @@ impl Array {
                             None
                         },
                     ]
-                });
+                }))
+            };
 
-                result
-                    .with_children(vec![x.clone(), y.clone()])
-                    .with_backward_op(Some(backward_op))
-            }
+            Array::sliced_op(vec![x, y], &op, backward_op, &dimensions, &dimensions, 1, 0)
         }
     }
 
@@ -180,12 +175,8 @@ impl Array {
             );
         });
 
-        let output_values =
-            Array::sliced_op(vec![a, b], &op, &input_dimensions, &output_dimensions, 2);
-        let result = Array::from((output_dimensions, output_values));
-
-        if !a.is_tracked && !b.is_tracked {
-            result
+        let backward_op: Option<BackwardOp> = if !a.is_tracked && !b.is_tracked {
+            None
         } else {
             let backward_a = Box::new(move |c: &mut Vec<Array>, x: &Array| {
                 if a_transpose {
@@ -203,17 +194,15 @@ impl Array {
                 }
             });
 
-            let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+            Some(Arc::new(move |c, t, x| {
                 vec![
                     if t[0] { Some(backward_a(c, x)) } else { None },
                     if t[1] { Some(backward_b(c, x)) } else { None },
                 ]
-            });
+            }))
+        };
 
-            result
-                .with_children(vec![a.clone(), b.clone()])
-                .with_backward_op(Some(backward_op))
-        }
+        Array::sliced_op(vec![a, b], &op, backward_op, &input_dimensions, &output_dimensions, 2, 0)
     }
 
     /// Computes matrix multiplications on two arrays, for each matching dimension not multiplied.

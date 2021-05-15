@@ -28,6 +28,7 @@
 
 mod arithmetic;
 mod linalg;
+mod nonlinearity;
 
 use crate::numbers::*;
 
@@ -390,8 +391,8 @@ impl Array {
     }
 
     /// Sets the backward operation of the array for the backward pass.
-    fn with_backward_op(mut self, backward_op: Option<BackwardOp>) -> Array {
-        self.backward_op = backward_op;
+    fn with_backward_op(mut self, backward_op: BackwardOp) -> Array {
+        self.backward_op = Some(backward_op);
         self
     }
 
@@ -534,22 +535,33 @@ impl Array {
     /// last `skip_size` dimensions, and performing the operation on the slices, which must have
     /// length of the product of the skipped dimensions.
     ///
+    /// # Arguments
+    ///
+    /// * `arrays` - The arrays to perform the operations on.
+    /// * `op` - The `SlicedOp`, which takes in slices of the arrays, and modifies the output slice.
+    /// * `input_dimensions` - The target dimensions to broadcast inputs to.
+    /// * `output_dimensions` - The output dimensions of the operation.
+    /// * `skip_count` - The number of dimensions which form the input slices.
+    /// * `flatten_count` - The number of dimensions which are flattened in the output.
+    ///
     /// # Panics
     ///
     /// Panics if unable to broadcast the arrays to `input_dimensions`.
     fn sliced_op(
         arrays: Vec<&Array>,
         op: &SlicedOp,
+        backward_op: Option<BackwardOp>,
         input_dimensions: &[usize],
         output_dimensions: &[usize],
-        skip_size: usize,
-    ) -> Vec<Float> {
+        skip_count: usize,
+        flatten_count: usize,
+    ) -> Array {
         let is_dimensions_valid = arrays.iter().all(|a| {
             a.dimensions
                 .iter()
                 .rev()
-                .skip(skip_size)
-                .zip(input_dimensions.iter().rev().skip(skip_size))
+                .skip(skip_count)
+                .zip(input_dimensions.iter().rev().skip(skip_count))
                 .all(|(x, y)| *x == 1 || *x == *y)
         });
 
@@ -558,45 +570,39 @@ impl Array {
         }
 
         // total length of the leading values
-        let leading_length = input_dimensions.iter().rev().skip(skip_size).product();
+        let leading_length = input_dimensions.iter().rev().skip(skip_count).product();
         // total length of the output
         let output_length = output_dimensions.iter().product();
 
         // count of leading dimensions
-        let leading_count = input_dimensions.len().saturating_sub(skip_size);
-        // total length of the slicesslice
+        let leading_count = input_dimensions.len().saturating_sub(skip_count);
+        // total length of the slices
         let group_lengths: Vec<usize> = arrays
             .iter()
-            .map(|a| a.dimensions.iter().rev().take(skip_size).product())
+            .map(|a| a.dimensions.iter().rev().take(skip_count).product())
             .collect();
         let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
 
-        let mut indices = vec![0; leading_count];
+        let mut indices = vec![0; input_dimensions.len()];
         let mut output_values = vec![0.0; output_length];
         for _ in 0..leading_length {
-            // add zero indices to the skipped dimensions
-            let chained = indices
-                .iter()
-                .copied()
-                .chain(vec![0; input_dimensions.len() - indices.len()])
-                .collect::<Vec<usize>>();
             let slices = arrays
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
-                    let offset = flatten_indices(&chained, &a.dimensions);
+                    let offset = flatten_indices(&indices, &a.dimensions);
                     &a.values[offset..offset + group_lengths[i]]
                 })
                 .collect();
 
-            let output_offset = flatten_indices(&chained, &output_dimensions);
+            let output_offset = flatten_indices(&indices, &output_dimensions);
             let output_slice =
                 &mut output_values[output_offset..output_offset + output_group_length];
 
             op(output_slice, slices);
 
-            for j in 0..indices.len() {
-                let current = indices.len() - j - 1;
+            for j in 0..leading_count {
+                let current = leading_count - j - 1;
                 if indices[current] == input_dimensions[current] - 1 {
                     indices[current] = 0;
                 } else {
@@ -606,23 +612,33 @@ impl Array {
             }
         }
 
-        output_values
+        let mut output_dimensions = output_dimensions.to_vec();
+        if flatten_count > 0 {
+            let flattened = output_dimensions.iter().rev().take(flatten_count).product::<usize>();
+            output_dimensions = output_dimensions.iter().take(output_dimensions.len() - flatten_count).copied().chain(vec![flattened]).collect::<Vec<usize>>();
+        }
+        
+        let result = Array::from((output_dimensions, output_values));
+        if let Some(backward_op) = backward_op {
+            result.with_children(arrays.iter().cloned().cloned().collect()).with_backward_op(backward_op)
+        } else {
+            result
+        }
     }
 
     /// Flattens the array by summing along dimensions to match the target dimensions.
     fn flatten_to(self, dimensions: Arc<Vec<usize>>) -> Array {
         if self.dimensions == dimensions {
-            return self;
+            self
+        } else {
+            let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+                for (i, output) in output_slice.iter_mut().enumerate() {
+                    *output += arrays[0][i];
+                }
+            });
+
+            Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, 0, 0)
         }
-
-        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
-            for (i, output) in output_slice.iter_mut().enumerate() {
-                *output += arrays[0][i];
-            }
-        });
-
-        let output_values = Array::sliced_op(vec![&self], &op, &self.dimensions, &*dimensions, 0);
-        Array::from((dimensions, Arc::new(output_values)))
     }
 
     /// Computes an operation on arrays.
@@ -630,7 +646,7 @@ impl Array {
     /// # Arguments
     ///
     /// * `arrays` - The arrays to perform the operations on.
-    /// * `op` - The `ForwardOp`, which takes in the arrays, and outputs another Array.
+    /// * `op` - The `ForwardOp`, which takes in the arrays, and outputs another array.
     /// * `backward_op` - The `BackwardOp`, which takes in the arrays, and the delta, and outputs a
     /// new delta, with respect to each input. It is recommended that any array operations here are
     /// untracked, unless interested in higher order derivatives.
@@ -676,69 +692,13 @@ impl Array {
     /// ```
     pub fn op(arrays: &[&Array], op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
         let result = op(arrays);
-        result
-            .with_children(arrays.iter().map(|v| (*v).clone()).collect())
-            .with_backward_op(backward_op)
-    }
-
-    /// Computes the ReLU of the array, defined as max(0, x) for all elements x in the array.
-    pub fn relu(&self) -> Array {
-        let (values, derivative) = self
-            .values
-            .iter()
-            .map(|&x| if x > 0.0 { (x, 1.0) } else { (0.0, 0.0) })
-            .unzip();
-
-        let result = Array::from((Arc::clone(&self.dimensions), Arc::new(values)));
-        let derivative = Array::from((Arc::clone(&self.dimensions), Arc::new(derivative)));
-
-        if !self.is_tracked {
+        if let Some(backward_op) = backward_op {
             result
+                .with_children(arrays.iter().map(|v| (*v).clone()).collect())
+                .with_backward_op(backward_op)
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(&derivative * x)]);
-
             result
-                .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
         }
-    }
-
-    /// Computes the sigmoid operation on each value of the array.
-    pub fn sigmoid(&self) -> Array {
-        let values = Arc::new(
-            self.values
-                .iter()
-                .map(|x| 1.0 / (1.0 + (-x).exp()))
-                .collect::<Vec<Float>>(),
-        );
-
-        let cached = Arc::clone(&values);
-        let result = Array::from((Arc::clone(&self.dimensions), values));
-
-        if !self.is_tracked {
-            result
-        } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
-                let values = arithmetic::mul_values(
-                    &cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(),
-                    &x.values,
-                );
-                vec![Some(Array::from((
-                    Arc::clone(&c[0].dimensions),
-                    Arc::new(values),
-                )))]
-            });
-
-            result
-                .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
-        }
-    }
-
-    /// Computes the softmax of the array.
-    pub fn softmax(&self) -> Array {
-        let exponentials = self.exp();
-        &exponentials / &exponentials.sum(1)
     }
 }
 
@@ -946,54 +906,6 @@ mod tests {
         c.backward(None);
 
         assert_eq!(a.gradient().unwrap(), arr![2.0, 4.0, 6.0]);
-    }
-
-    #[test]
-    fn test_softmax() {
-        let a = arr![
-            arr![(2.0 as Float).ln(), (2.0 as Float).ln()],
-            arr![(1.0 as Float).ln(), (1.0 as Float).ln()]
-        ]
-        .tracked();
-        let b = arr![arr![3.0, 5.0], arr![2.0, 5.0]].tracked();
-        let c = a.softmax().tracked();
-
-        let mut result = &c * &b;
-        assert_eq!(result, arr![arr![1.5, 2.5], arr![1.0, 2.5]]);
-
-        result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![3.0, 5.0], arr![2.0, 5.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![0.5, 0.5], arr![0.5, 0.5]]);
-        assert_eq!(
-            a.gradient().unwrap(),
-            arr![arr![-0.5, 0.5], arr![-0.75, 0.75]]
-        );
-    }
-
-    #[test]
-    fn test_relu() {
-        let a = arr![1.0, -2.0, 0.0].tracked();
-
-        let mut result = a.relu();
-        assert_eq!(result, arr![1.0, 0.0, 0.0]);
-
-        result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn test_sigmoid() {
-        let a = arr![arr![(3.0 as Float).ln()]].tracked();
-        let b = arr![arr![5.0]].tracked();
-        let c = a.sigmoid().tracked();
-
-        let mut result = &c * &b;
-        assert_relative_eq!(result, arr![arr![3.75]]);
-
-        result.backward(None);
-        assert_relative_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
-        assert_relative_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
-        assert_relative_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
     }
 
     #[test]

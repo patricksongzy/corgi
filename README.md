@@ -65,7 +65,7 @@ let mut c = arr![0.0].tracked();
 for _ in 0..10 {
     c = &c + &(&a * &b);
     if c[0] > 50.0 {
-	c = &c * &a;
+        c = &c * &a;
     }
 }
 
@@ -92,7 +92,7 @@ assert_eq!(a.gradient(), arr![232420.0]);
 ## Backward Pass
 * An informal UML sequence diagram (it's not entirely up to specs, but should give an overview of the process):
 
-![Informal UML sequence diagram](https://raw.githubusercontent.com/patricksongzy/corgi/main/images/sequence.svg?sanitize=true)
+![Informal UML sequence diagram](https://raw.githubusercontent.com/patricksongzy/corgi/main/doc/image/sequence.svg?sanitize=true)
 
 ## Name
 * Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).

@@ -23,7 +23,7 @@ impl Array {
 
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 
@@ -44,7 +44,7 @@ impl Array {
 
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 
@@ -60,7 +60,7 @@ impl Array {
 
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 
@@ -83,13 +83,13 @@ impl Array {
 
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 
-    /// Sums along the last `skip_size` dimensions.
-    pub fn sum(&self, skip_size: usize) -> Array {
-        if skip_size == 0 {
+    /// Sums along the last `skip_count` dimensions.
+    pub fn sum(&self, skip_count: usize) -> Array {
+        if skip_count == 0 {
             return self.clone();
         }
 
@@ -97,54 +97,48 @@ impl Array {
             output_slice[0] = arrays[0].iter().sum();
         });
 
-        let leading_count = self.dimensions.len().saturating_sub(skip_size);
+        let leading_count = self.dimensions.len().saturating_sub(skip_count);
         let target_dimensions: Vec<usize> = self
             .dimensions
             .iter()
             .copied()
             .take(leading_count)
-            .chain(vec![1; skip_size])
+            .chain(vec![1; skip_count])
             .collect();
+        let target_clone = target_dimensions.clone();
 
-        let output_values = Array::sliced_op(
-            vec![self],
-            &op,
-            &self.dimensions,
-            &target_dimensions,
-            skip_size,
-        );
-
-        let output_dimensions = target_dimensions[0..leading_count + 1].to_vec();
-        let result = Array::from((output_dimensions, output_values));
-
-        if !self.is_tracked {
-            result
+        let backward_op: Option<BackwardOp> = if !self.is_tracked {
+            None
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
+            Some(Arc::new(move |c, _, x| {
                 let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                    // propagate delta to each summed dimension
                     for output in output_slice.iter_mut() {
                         *output = arrays[0][0];
                     }
                 });
 
-                let output_values = Array::sliced_op(
+                vec![Some(Array::sliced_op(
                     vec![&x],
                     &op,
-                    &target_dimensions,
+                    None,
+                    &target_clone,
                     &c[0].dimensions,
-                    skip_size,
-                );
+                    skip_count,
+                    0,
+                ))]
+            }))
+        };
 
-                vec![Some(Array::from((
-                    Arc::clone(&c[0].dimensions),
-                    Arc::new(output_values),
-                )))]
-            });
-
-            result
-                .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
-        }
+        Array::sliced_op(
+            vec![self],
+            &op,
+            backward_op,
+            &self.dimensions,
+            &target_dimensions,
+            skip_count,
+            skip_count,
+        )
     }
 
     /// Sums all the values of the array.
@@ -166,13 +160,10 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
             }
         });
 
-        let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
-        let result = Array::from((Arc::new(dimensions), Arc::new(output_values)));
-
-        if !self.is_tracked && !other.is_tracked {
-            result
+        let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
+            None
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+            Some(Arc::new(move |_, t, x| {
                 vec![
                     if t[0] {
                         Some(Array::from((
@@ -191,12 +182,10 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
                         None
                     },
                 ]
-            });
+            }))
+        };
 
-            result
-                .with_children(vec![self.clone(), other.clone()])
-                .with_backward_op(Some(backward_op))
-        }
+        Array::sliced_op(vec![self, other], &op, backward_op, &dimensions, &dimensions, 0, 0)
     }
 }
 
@@ -225,7 +214,7 @@ impl<'a> ops::Neg for &'a Array {
             let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(-x)]);
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 }
@@ -255,7 +244,7 @@ impl<'a> ops::Mul<Float> for &'a Array {
             let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(x * other)]);
             result
                 .with_children(vec![self.clone()])
-                .with_backward_op(Some(backward_op))
+                .with_backward_op(backward_op)
         }
     }
 }
@@ -272,24 +261,19 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
             }
         });
 
-        let dimensions = Arc::new(dimensions);
-        let output_values = Array::sliced_op(vec![self, other], &op, &dimensions, &dimensions, 0);
-        let result = Array::from((Arc::clone(&dimensions), Arc::new(output_values)));
-
-        if !self.is_tracked && !other.is_tracked {
-            result
+        let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
+            None
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, t, x| {
+            Some(Arc::new(move |c, t, x| {
                 vec![
                     if t[0] { Some(&c[1] * x) } else { None },
                     if t[1] { Some(&c[0] * x) } else { None },
                 ]
-            });
+            }))
+        };
 
-            result
-                .with_children(vec![self.clone(), other.clone()])
-                .with_backward_op(Some(backward_op))
-        }
+        let dimensions = Arc::new(dimensions);
+        Array::sliced_op(vec![self, other], &op, backward_op, &dimensions, &dimensions, 0, 0)
     }
 }
 
