@@ -270,7 +270,7 @@ fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usiz
 
     if !is_dimensions_valid {
         panic!(
-            "error: multiplication dimensions, {:?}, and {:?} must be matching",
+            "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
             *x, *y
         );
     }

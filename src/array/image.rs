@@ -14,6 +14,8 @@ impl Array {
         let image_rows = image.dimensions[dimension_count - 2];
         let image_cols = image.dimensions[dimension_count - 1];
 
+        let image_dimensions = (image_depth, image_rows, image_cols);
+
         // the number of values in strided to
         let row_stride_count = (image_rows - filter_rows) / stride_rows + 1;
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
@@ -37,9 +39,13 @@ impl Array {
                 for c in 0..col_stride_count {
                     for k in 0..image_depth {
                         for m in 0..filter_rows {
+                            // the filter row position plus the stride row position
+                            let row_index = m + stride_rows * r;
                             for n in 0..filter_cols {
-                                let input_index = (n + stride_cols * c)
-                                    + image_cols * ((m + stride_rows * r) + image_rows * k);
+                                // the filter col position plus the stride col position
+                                let col_index = n + stride_cols * c;
+                                let input_index =
+                                    col_index + image_cols * (row_index + image_rows * k);
                                 output_slice[output_index] = arrays[0][input_index];
                                 output_index += 1;
                             }
@@ -49,7 +55,7 @@ impl Array {
             }
         });
 
-        Array::sliced_op(
+        let result = Array::sliced_op(
             vec![image],
             &op,
             None,
@@ -57,7 +63,27 @@ impl Array {
             &output_dimensions,
             3,
             0,
-        )
+        );
+
+        if !image.is_tracked {
+            result
+        } else {
+            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+                vec![if t[0] {
+                    Some(Array::roll_blocks(
+                        &x,
+                        image_dimensions,
+                        stride_dimensions,
+                        filter_dimensions,
+                    ))
+                } else {
+                    None
+                }]
+            });
+            result
+                .with_backward_op(backward_op)
+                .with_children(vec![image.clone()])
+        }
     }
 
     fn roll_blocks(
@@ -92,14 +118,23 @@ impl Array {
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for i in 0..image_depth {
                 let depth_offset = i * image_rows * image_cols;
+                // the starting col of the unrolled matrix since depths are on the same row
                 let skipped = i * filter_rows * filter_cols;
                 for j in 0..unrolled_count {
+                    // the position of the top-left corner of the current filter
+                    let (stride_row_index, stride_col_index) =
+                        (j / col_stride_count, j % col_stride_count);
                     let stride_offset =
-                        stride_cols * (j % col_stride_count) + image_cols * (j / col_stride_count);
+                        stride_cols * stride_col_index + image_cols * stride_row_index;
                     for k in 0..unrolled_size {
-                        let filter_offset = (k % filter_cols) + image_cols * (k / filter_cols);
-                        output_slice[stride_offset + filter_offset + depth_offset] =
-                            arrays[0][k + skipped + unrolled_size * image_depth * j];
+                        // the position inside the filter
+                        let (filter_row_index, filter_col_index) =
+                            (k / filter_cols, k % filter_cols);
+                        let filter_offset = filter_col_index + image_cols * filter_row_index;
+
+                        let output_index = stride_offset + filter_offset + depth_offset;
+                        let input_index = k + skipped + unrolled_size * image_depth * j;
+                        output_slice[output_index] = arrays[0][input_index];
                     }
                 }
             }
@@ -115,13 +150,81 @@ impl Array {
             0,
         );
 
-        Array::from((Arc::new(output_dimensions), result.values))
+        if !unrolled.is_tracked {
+            result
+        } else {
+            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+                vec![if t[0] {
+                    Some(Array::unroll_blocks(
+                        &x,
+                        stride_dimensions,
+                        filter_dimensions,
+                    ))
+                } else {
+                    None
+                }]
+            });
+            result
+                .with_backward_op(backward_op)
+                .with_children(vec![unrolled.clone()])
+        }
+    }
+
+    /// Transforms arrays of the form (output rows * output cols, depth) to (depth, output rows, output cols).
+    fn expand_conv(&self, stride_counts: (usize, usize)) -> Array {
+        let (row_stride_count, col_stride_count) = stride_counts;
+        let filter_count = self.dimensions[self.dimensions.len() - 1];
+
+        let values_size = self.values.len();
+        let skip_size = values_size / filter_count;
+        let mut result = vec![0.0; values_size];
+        let mut result_index = 0;
+        for k in 0..filter_count {
+            for i in 0..skip_size {
+                result[result_index] = self.values[k + filter_count * i];
+                result_index += 1;
+            }
+        }
+
+        let output_dimensions: Vec<usize> = self
+            .dimensions
+            .iter()
+            .take(self.dimensions.len() - 2)
+            .copied()
+            .chain(vec![filter_count, row_stride_count, col_stride_count])
+            .collect();
+
+        let result = Array::from((output_dimensions, result));
+
+        if !self.is_tracked {
+            result
+        } else {
+            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
+                let mut result = vec![0.0; values_size];
+                let mut delta_index = 0;
+                for k in 0..filter_count {
+                    for i in 0..skip_size {
+                        result[k + filter_count * i] = x.values[delta_index];
+                        delta_index += 1;
+                    }
+                }
+
+                vec![Some(Array::from((
+                    Arc::clone(&c[0].dimensions),
+                    Arc::new(result),
+                )))]
+            });
+
+            result
+                .with_backward_op(backward_op)
+                .with_children(vec![self.clone()])
+        }
     }
 
     /// Computes the image convolution of the array with the filter.
-    pub fn conv(&self, filter: &Array, stride_dimensions: (usize, usize)) -> Array {
+    pub fn conv(&self, filters: &Array, stride_dimensions: (usize, usize)) -> Array {
         let dimension_count = self.dimensions.len();
-        let filter_dimension_count = filter.dimensions.len();
+        let filter_dimension_count = filters.dimensions.len();
         let unrolled_dimension_count = dimension_count - 1;
 
         if dimension_count < 3 || filter_dimension_count < 3 {
@@ -137,8 +240,8 @@ impl Array {
         );
 
         let (filter_rows, filter_cols) = (
-            filter.dimensions[filter_dimension_count - 2],
-            filter.dimensions[filter_dimension_count - 1],
+            filters.dimensions[filter_dimension_count - 2],
+            filters.dimensions[filter_dimension_count - 1],
         );
 
         let filter_dimensions = (filter_rows, filter_cols);
@@ -146,10 +249,12 @@ impl Array {
         let row_stride_count = (image_rows - filter_rows) / stride_rows + 1;
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
 
+        // convert image dimensions to (unrolled count, unrolled size * image depth)
         let unrolled = Array::unroll_blocks(&self, stride_dimensions, filter_dimensions);
         let unrolled_size = unrolled.dimensions[unrolled_dimension_count - 1] / image_depth;
 
-        let filter_matrix_dimensions = filter
+        // combine last three filter dimensions to single row to (filter count, unrolled size * image depth)
+        let filter_matrix_dimensions = filters
             .dimensions
             .iter()
             .cloned()
@@ -157,31 +262,12 @@ impl Array {
             .chain(vec![unrolled_size * image_depth])
             .collect();
 
-        let filter_matrix = Array::from((
-            Arc::new(filter_matrix_dimensions),
-            Arc::clone(&filter.values),
-        ));
+        let filter_matrix = filters.reshape(filter_matrix_dimensions);
 
+        // convert unrolled dimensions to (unrolled count, filter count)
         let convolved = Array::matmul((&unrolled, false), (&filter_matrix, true), None);
-        let skip_size = convolved.values.len() / image_depth;
-        let mut result = vec![0.0; convolved.values.len()];
-        let mut result_index = 0;
-        for k in 0..image_depth {
-            for i in 0..skip_size {
-                result[result_index] = convolved[k + image_depth * i];
-                result_index += 1;
-            }
-        }
-
-        let output_dimensions: Vec<usize> = self
-            .dimensions
-            .iter()
-            .take(dimension_count - 3)
-            .copied()
-            .chain(vec![image_depth, row_stride_count, col_stride_count])
-            .collect();
-
-        Array::from((output_dimensions, result))
+        // convert convolved dimensions to (filter count, row stride count, col stride count)
+        convolved.expand_conv((row_stride_count, col_stride_count))
     }
 }
 
@@ -189,6 +275,19 @@ impl Array {
 mod tests {
     use super::*;
     use crate::arr;
+
+    #[test]
+    fn test_expand_conv() {
+        let a = arr![arr![1.0, 4.0], arr![2.0, 5.0], arr![3.0, 6.0]].tracked();
+        let mut expanded = a.expand_conv((1, 3));
+        assert_eq!(
+            expanded,
+            arr![arr![arr![1.0, 2.0, 3.0]], arr![arr![4.0, 5.0, 6.0]]]
+        );
+
+        expanded.backward(Some(expanded.clone()));
+        assert_eq!(a.gradient().unwrap(), a.clone());
+    }
 
     #[test]
     fn test_rolling() {
@@ -260,8 +359,8 @@ mod tests {
             arr![7.0, 8.0, 9.0]
         ]];
 
-        let filter = arr![arr![arr![3.0, 5.0], arr![2.0, 6.0]]];
-        let conv = a.conv(&filter, (1, 1));
+        let filters = arr![arr![arr![3.0, 5.0], arr![2.0, 6.0]]];
+        let conv = a.conv(&filters, (1, 1));
         assert_eq!(conv, arr![arr![arr![51.0, 67.0], arr![99.0, 115.0]]]);
     }
 
@@ -273,8 +372,8 @@ mod tests {
             arr![7.0, 8.0, 9.0]
         ]]];
 
-        let filter = arr![arr![arr![3.0, 5.0], arr![2.0, 6.0]]];
-        let conv = a.conv(&filter, (1, 1));
+        let filters = arr![arr![arr![3.0, 5.0], arr![2.0, 6.0]]];
+        let conv = a.conv(&filters, (1, 1));
         assert_eq!(conv, arr![arr![arr![arr![51.0, 67.0], arr![99.0, 115.0]]]]);
     }
 
@@ -283,18 +382,40 @@ mod tests {
         let a = arr![
             arr![arr![1.0, 2.0, 3.0, 4.0], arr![5.0, 6.0, 7.0, 8.0]],
             arr![arr![9.0, 10.0, 11.0, 12.0], arr![13.0, 14.0, 15.0, 16.0]]
-        ];
+        ]
+        .tracked();
 
-        let filter = arr![
+        let filters = arr![
             arr![arr![arr![3.0, 5.0]], arr![arr![1.0, 3.0]]],
+            arr![arr![arr![1.0, 3.0]], arr![arr![2.0, 8.0]]],
             arr![arr![arr![1.0, 3.0]], arr![arr![2.0, 8.0]]]
-        ];
-        let conv = a.conv(&filter, (1, 2));
+        ]
+        .tracked();
+
+        let mut conv = a.conv(&filters, (1, 2));
         assert_eq!(
             conv,
             arr![
                 arr![arr![52.0, 76.0], arr![100.0, 124.0]],
+                arr![arr![105.0, 133.0], arr![161.0, 189.0]],
                 arr![arr![105.0, 133.0], arr![161.0, 189.0]]
+            ]
+        );
+
+        conv.backward(None);
+        assert_eq!(
+            a.gradient().unwrap(),
+            arr![
+                arr![arr![5.0, 11.0, 5.0, 11.0], arr![5.0, 11.0, 5.0, 11.0]],
+                arr![arr![5.0, 19.0, 5.0, 19.0], arr![5.0, 19.0, 5.0, 19.0]]
+            ]
+        );
+        assert_eq!(
+            filters.gradient().unwrap(),
+            arr![
+                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]],
+                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]],
+                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]]
             ]
         );
     }

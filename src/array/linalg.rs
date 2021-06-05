@@ -7,6 +7,27 @@ use crate::arr;
 use crate::blas::{daxpy_blas, matmul_blas};
 
 impl Array {
+    /// Reshapes the array into different dimensions
+    pub fn reshape(&self, dimensions: Vec<usize>) -> Array {
+        let result = Array::from((Arc::new(dimensions), Arc::clone(&self.values)));
+
+        if !self.is_tracked {
+            result
+        } else {
+            let backward_op: BackwardOp = Arc::new(|c, t, x| {
+                vec![if t[0] {
+                    Some(x.reshape(c[0].dimensions()))
+                } else {
+                    None
+                }]
+            });
+
+            result
+                .with_backward_op(backward_op)
+                .with_children(vec![self.clone()])
+        }
+    }
+
     /// Computes the element-wise `alpha * x + y`, for each matching dimension not multiplied.
     pub fn axpy(alpha: Float, x: &Array, y: &Array) -> Array {
         #[cfg(not(feature = "blas"))]
@@ -100,7 +121,7 @@ impl Array {
     /// `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
     /// `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
     /// `c` - The output matrix, if not initialized to a zeros matrix.
-    fn matmul_values(a: (&Array, bool), b: (&Array, bool), c: Option<&Array>) -> Array {
+    pub fn matmul(a: (&Array, bool), b: (&Array, bool), c: Option<&Array>) -> Array {
         let (a, a_transpose) = a;
         let (b, b_transpose) = b;
 
@@ -201,17 +222,17 @@ impl Array {
         } else {
             let backward_a = Box::new(move |c: &mut Vec<Array>, x: &Array| {
                 if a_transpose {
-                    Array::matmul_values((&c[1], b_transpose), (x, true), None)
+                    Array::matmul((&c[1], b_transpose), (x, true), None)
                 } else {
-                    Array::matmul_values((x, false), (&c[1], !b_transpose), None)
+                    Array::matmul((x, false), (&c[1], !b_transpose), None)
                 }
             });
 
             let backward_b = Box::new(move |c: &mut Vec<Array>, x: &Array| {
                 if b_transpose {
-                    Array::matmul_values((&x, true), (&c[0], a_transpose), None)
+                    Array::matmul((&x, true), (&c[0], a_transpose), None)
                 } else {
-                    Array::matmul_values((&c[0], !a_transpose), (&x, false), None)
+                    Array::matmul((&c[0], !a_transpose), (&x, false), None)
                 }
             });
 
@@ -236,22 +257,21 @@ impl Array {
             0,
         )
     }
-
-    /// Computes matrix multiplications on two arrays, for each matching dimension not multiplied.
-    ///
-    /// # Arguments
-    ///
-    /// * `a` - The LHS matrix, and whether to transpose it: `(a, a_transpose)`.
-    /// * `b` - The RHS matrix, and whether to transpose it: `(b, b_transpose)`.
-    /// * `c` - The output matrix, if not initialized to a zeros matrix.
-    pub fn matmul(a: (&Array, bool), b: (&Array, bool), c: Option<&Array>) -> Array {
-        Array::matmul_values(a, b, c)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_reshape() {
+        let a = arr![arr![1.0, 2.0], arr![3.0, 4.0]].tracked();
+        let mut reshaped = a.reshape(vec![1, 4]);
+        assert_eq!(reshaped, arr![arr![1.0, 2.0, 3.0, 4.0]]);
+
+        reshaped.backward(None);
+        assert_eq!(a.gradient().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+    }
 
     #[test]
     fn test_axpy() {
