@@ -157,7 +157,7 @@ pub(crate) fn matmul_blas(
             lda,
             b.as_ptr(),
             ldb,
-            0.0,
+            1.0,
             values.as_mut_ptr(),
             output_cols,
         );
@@ -174,7 +174,7 @@ pub(crate) fn matmul_blas(
             lda,
             b.as_ptr(),
             ldb,
-            0.0,
+            1.0,
             values.as_mut_ptr(),
             output_cols,
         );

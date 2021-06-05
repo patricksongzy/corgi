@@ -165,27 +165,21 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
         } else {
             Some(Arc::new(move |_, t, x| {
                 vec![
-                    if t[0] {
-                        Some(Array::from((
-                            Arc::clone(&x.dimensions),
-                            Arc::clone(&x.values),
-                        )))
-                    } else {
-                        None
-                    },
-                    if t[1] {
-                        Some(Array::from((
-                            Arc::clone(&x.dimensions),
-                            Arc::clone(&x.values),
-                        )))
-                    } else {
-                        None
-                    },
+                    if t[0] { Some(x.clone()) } else { None },
+                    if t[1] { Some(x.clone()) } else { None },
                 ]
             }))
         };
 
-        Array::sliced_op(vec![self, other], &op, backward_op, &dimensions, &dimensions, 0, 0)
+        Array::sliced_op(
+            vec![self, other],
+            &op,
+            backward_op,
+            &dimensions,
+            &dimensions,
+            0,
+            0,
+        )
     }
 }
 
@@ -273,7 +267,15 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         };
 
         let dimensions = Arc::new(dimensions);
-        Array::sliced_op(vec![self, other], &op, backward_op, &dimensions, &dimensions, 0, 0)
+        Array::sliced_op(
+            vec![self, other],
+            &op,
+            backward_op,
+            &dimensions,
+            &dimensions,
+            0,
+            0,
+        )
     }
 }
 

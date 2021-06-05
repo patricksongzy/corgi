@@ -1,4 +1,6 @@
-//! An optimizer updates the parameters of a model.
+//! Implementations of gradient descent optimizers, to optimize the parameters of a model.
+
+pub mod gd;
 
 use crate::array::Array;
 

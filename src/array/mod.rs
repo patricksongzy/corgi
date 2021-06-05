@@ -27,6 +27,7 @@
 //! ```
 
 mod arithmetic;
+mod image;
 mod linalg;
 mod nonlinearity;
 
@@ -266,6 +267,7 @@ fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usiz
         .rev()
         .zip(other.iter().rev())
         .all(|(&l, &o)| l == o || l == 1 || o == 1);
+
     if !is_dimensions_valid {
         panic!(
             "error: multiplication dimensions, {:?}, and {:?} must be matching",
@@ -595,7 +597,18 @@ impl Array {
                 })
                 .collect();
 
-            let output_offset = flatten_indices(&indices, &output_dimensions);
+            let output_indices: Vec<usize> = indices
+                .iter()
+                .copied()
+                .chain(vec![
+                    0;
+                    output_dimensions
+                        .len()
+                        .saturating_sub(input_dimensions.len())
+                ])
+                .collect();
+
+            let output_offset = flatten_indices(&output_indices, &output_dimensions);
             let output_slice =
                 &mut output_values[output_offset..output_offset + output_group_length];
 
@@ -614,13 +627,24 @@ impl Array {
 
         let mut output_dimensions = output_dimensions.to_vec();
         if flatten_count > 0 {
-            let flattened = output_dimensions.iter().rev().take(flatten_count).product::<usize>();
-            output_dimensions = output_dimensions.iter().take(output_dimensions.len() - flatten_count).copied().chain(vec![flattened]).collect::<Vec<usize>>();
+            let flattened = output_dimensions
+                .iter()
+                .rev()
+                .take(flatten_count)
+                .product::<usize>();
+            output_dimensions = output_dimensions
+                .iter()
+                .take(output_dimensions.len() - flatten_count)
+                .copied()
+                .chain(vec![flattened])
+                .collect::<Vec<usize>>();
         }
-        
+
         let result = Array::from((output_dimensions, output_values));
         if let Some(backward_op) = backward_op {
-            result.with_children(arrays.iter().cloned().cloned().collect()).with_backward_op(backward_op)
+            result
+                .with_children(arrays.iter().cloned().cloned().collect())
+                .with_backward_op(backward_op)
         } else {
             result
         }
@@ -631,11 +655,12 @@ impl Array {
         if self.dimensions == dimensions {
             self
         } else {
-            let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
-                for (i, output) in output_slice.iter_mut().enumerate() {
-                    *output += arrays[0][i];
-                }
-            });
+            let op: SlicedOp =
+                Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+                    for (i, output) in output_slice.iter_mut().enumerate() {
+                        *output += arrays[0][i];
+                    }
+                });
 
             Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, 0, 0)
         }

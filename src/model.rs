@@ -1,8 +1,8 @@
 //! A supervised neural network model, which computes a forward pass, and updates parameters based on a target.
 
 use crate::array::*;
+use crate::cost::CostFunction;
 use crate::layer::Layer;
-use crate::nn::cost::CostFunction;
 use crate::numbers::*;
 use crate::optimizer::Optimizer;
 
@@ -68,9 +68,9 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layers::dense::Dense;
-    use crate::nn::{activation, cost, initializer};
-    use crate::optimizers::gd::GradientDescent;
+    use crate::layer::dense::Dense;
+    use crate::optimizer::gd::GradientDescent;
+    use crate::{activation, cost, initializer};
 
     use rand::Rng;
 
