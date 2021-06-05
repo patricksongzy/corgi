@@ -61,25 +61,25 @@ impl Array {
     }
 
     fn roll_blocks(
-        flattened: &Array,
+        unrolled: &Array,
         image_dimensions: (usize, usize, usize),
         stride_dimensions: (usize, usize),
         filter_dimensions: (usize, usize),
     ) -> Array {
-        let dimension_count = flattened.dimensions.len();
+        let dimension_count = unrolled.dimensions.len();
         let (image_depth, image_rows, image_cols) = image_dimensions;
         let (_, stride_cols) = stride_dimensions;
         let (filter_rows, filter_cols) = filter_dimensions;
 
         // the number of unrolled rows
-        let unrolled_count = flattened.dimensions[dimension_count - 2];
+        let unrolled_count = unrolled.dimensions[dimension_count - 2];
         // the length of each unrolled row
-        let unrolled_size = flattened.dimensions[dimension_count - 1] / image_depth;
+        let unrolled_size = unrolled.dimensions[dimension_count - 1] / image_depth;
 
         // the number of values in strided to
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
 
-        let leading_dimensions = flattened
+        let leading_dimensions = unrolled
             .dimensions
             .iter()
             .copied()
@@ -106,10 +106,10 @@ impl Array {
         });
 
         let result = Array::sliced_op(
-            vec![flattened],
+            vec![unrolled],
             &op,
             None,
-            &flattened.dimensions,
+            &unrolled.dimensions,
             &output_dimensions,
             3,
             0,
@@ -118,10 +118,15 @@ impl Array {
         Array::from((Arc::new(output_dimensions), result.values))
     }
 
-    fn conv(&self, filter: &Array, stride_dimensions: (usize, usize)) -> Array {
+    /// Computes the image convolution of the array with the filter.
+    pub fn conv(&self, filter: &Array, stride_dimensions: (usize, usize)) -> Array {
         let dimension_count = self.dimensions.len();
         let filter_dimension_count = filter.dimensions.len();
         let unrolled_dimension_count = dimension_count - 1;
+
+        if dimension_count < 3 || filter_dimension_count < 3 {
+            panic!("error: cannot convolve with fewer than 3 dimensions");
+        }
 
         let (stride_rows, stride_cols) = stride_dimensions;
 
@@ -131,20 +136,17 @@ impl Array {
             self.dimensions[dimension_count - 1],
         );
 
-        let (filter_depth, filter_rows, filter_cols)  = (
-            filter.dimensions[filter_dimension_count - 3],
+        let (filter_rows, filter_cols) = (
             filter.dimensions[filter_dimension_count - 2],
             filter.dimensions[filter_dimension_count - 1],
         );
 
-        let image_dimensions = (image_depth, image_rows, image_cols);
         let filter_dimensions = (filter_rows, filter_cols);
 
         let row_stride_count = (image_rows - filter_rows) / stride_rows + 1;
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
 
         let unrolled = Array::unroll_blocks(&self, stride_dimensions, filter_dimensions);
-        let unrolled_count = unrolled.dimensions[unrolled_dimension_count - 2];
         let unrolled_size = unrolled.dimensions[unrolled_dimension_count - 1] / image_depth;
 
         let filter_matrix_dimensions = filter
@@ -152,7 +154,7 @@ impl Array {
             .iter()
             .cloned()
             .take(filter_dimension_count.saturating_sub(3))
-            .chain(vec![unrolled_size * image_dimensions.0])
+            .chain(vec![unrolled_size * image_depth])
             .collect();
 
         let filter_matrix = Array::from((
@@ -161,15 +163,25 @@ impl Array {
         ));
 
         let convolved = Array::matmul((&unrolled, false), (&filter_matrix, true), None);
+        let skip_size = convolved.values.len() / image_depth;
+        let mut result = vec![0.0; convolved.values.len()];
+        let mut result_index = 0;
+        for k in 0..image_depth {
+            for i in 0..skip_size {
+                result[result_index] = convolved[k + image_depth * i];
+                result_index += 1;
+            }
+        }
+
         let output_dimensions: Vec<usize> = self
             .dimensions
             .iter()
             .take(dimension_count - 3)
             .copied()
-            .chain(vec![1, row_stride_count, col_stride_count])
+            .chain(vec![image_depth, row_stride_count, col_stride_count])
             .collect();
 
-        Array::from((Arc::new(output_dimensions), convolved.values))
+        Array::from((output_dimensions, result))
     }
 }
 
@@ -254,14 +266,36 @@ mod tests {
     }
 
     #[test]
+    fn test_conv_filter_broadcast() {
+        let a = arr![arr![arr![
+            arr![1.0, 2.0, 3.0],
+            arr![4.0, 5.0, 6.0],
+            arr![7.0, 8.0, 9.0]
+        ]]];
+
+        let filter = arr![arr![arr![3.0, 5.0], arr![2.0, 6.0]]];
+        let conv = a.conv(&filter, (1, 1));
+        assert_eq!(conv, arr![arr![arr![arr![51.0, 67.0], arr![99.0, 115.0]]]]);
+    }
+
+    #[test]
     fn test_conv_strided() {
         let a = arr![
             arr![arr![1.0, 2.0, 3.0, 4.0], arr![5.0, 6.0, 7.0, 8.0]],
             arr![arr![9.0, 10.0, 11.0, 12.0], arr![13.0, 14.0, 15.0, 16.0]]
         ];
 
-        let filter = arr![arr![arr![3.0, 5.0]], arr![arr![1.0, 3.0]]];
+        let filter = arr![
+            arr![arr![arr![3.0, 5.0]], arr![arr![1.0, 3.0]]],
+            arr![arr![arr![1.0, 3.0]], arr![arr![2.0, 8.0]]]
+        ];
         let conv = a.conv(&filter, (1, 2));
-        assert_eq!(conv, arr![arr![arr![52.0, 76.0], arr![100.0, 124.0]]]);
+        assert_eq!(
+            conv,
+            arr![
+                arr![arr![52.0, 76.0], arr![100.0, 124.0]],
+                arr![arr![105.0, 133.0], arr![161.0, 189.0]]
+            ]
+        );
     }
 }
