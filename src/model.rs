@@ -68,6 +68,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layer::conv::Conv;
     use crate::layer::dense::Dense;
     use crate::optimizer::gd::GradientDescent;
     use crate::{activation, cost, initializer};
@@ -76,42 +77,14 @@ mod tests {
 
     use std::sync::Arc;
 
-    #[test]
-    fn test_gradient() {
+    fn test_gradient(mut model: Model, cost: CostFunction, input: Array, target: Array) {
         #[cfg(feature = "f32")]
         let epsilon = 1e-2;
         #[cfg(not(feature = "f32"))]
         let epsilon = 1e-7;
-        let learning_rate = 0.0;
-        let input_size = 2;
-        let hidden_size = 16;
-        let output_size = 2;
-        let initializer = initializer::make_he();
-        let sigmoid = activation::make_sigmoid();
-        let softmax = activation::make_softmax();
-        let cross_entropy = cost::make_cross_entropy();
-        let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(
-            input_size,
-            hidden_size,
-            initializer.clone(),
-            Some(Arc::clone(&sigmoid)),
-        );
-        let l2 = Dense::new(
-            hidden_size,
-            output_size,
-            initializer.clone(),
-            Some(Arc::clone(&softmax)),
-        );
-        let mut model = Model::new(
-            vec![Box::new(l1), Box::new(l2)],
-            Box::new(gd),
-            Arc::clone(&cross_entropy),
-        );
 
-        let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
-        model.forward(arr![x, y]);
-        model.backward(arr![z, w]);
+        model.forward(input.clone());
+        model.backward(target.clone());
 
         // due to borrow checking, we need to keep re-borrowing, and dropping the parameters
         let parameters = Model::parameters(&mut model.layers);
@@ -139,8 +112,8 @@ mod tests {
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_plus = model.forward(arr![x, y]);
-                let error_plus = (cross_entropy)(&result_plus, &arr![z, w]).sum_all();
+                let result_plus = model.forward(input.clone());
+                let error_plus = (cost)(&result_plus, &target.clone()).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = -2.0 * epsilon;
@@ -153,8 +126,8 @@ mod tests {
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_minus = model.forward(arr![x, y]);
-                let error_minus = (cross_entropy)(&result_minus, &arr![z, w]).sum_all();
+                let result_minus = model.forward(input.clone());
+                let error_minus = (cost)(&result_minus, &target).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
@@ -181,6 +154,87 @@ mod tests {
             println!("{}", norm);
             assert!(norm < epsilon);
         }
+    }
+
+    #[test]
+    fn test_dense_gradient() {
+        let learning_rate = 0.0;
+        let input_size = 2;
+        let hidden_size = 16;
+        let output_size = 2;
+        let initializer = initializer::make_he();
+        let sigmoid = activation::make_sigmoid();
+        let softmax = activation::make_softmax();
+        let cross_entropy = cost::make_cross_entropy();
+        let gd = GradientDescent::new(learning_rate);
+        let l1 = Dense::new(
+            input_size,
+            hidden_size,
+            initializer.clone(),
+            Some(Arc::clone(&sigmoid)),
+        );
+        let l2 = Dense::new(
+            hidden_size,
+            output_size,
+            initializer.clone(),
+            Some(Arc::clone(&softmax)),
+        );
+        let model = Model::new(
+            vec![Box::new(l1), Box::new(l2)],
+            Box::new(gd),
+            Arc::clone(&cross_entropy),
+        );
+
+        let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
+        test_gradient(model, cross_entropy, arr![x, y], arr![z, w]);
+    }
+
+    #[test]
+    fn test_conv_gradient() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+
+        let learning_rate = 0.0;
+
+        let (image_depth, image_rows, image_cols) = (3, 9, 9);
+        let image_dimensions = vec![image_depth, image_rows, image_cols];
+        let output_dimensions = vec![1, 2, 2];
+        let input_size = image_dimensions.iter().product();
+        let output_size = output_dimensions.iter().product();
+
+        let initializer = initializer::make_he();
+        let activation = activation::make_relu();
+        let mse = cost::make_mse();
+        let gd = GradientDescent::new(learning_rate);
+
+        let l1 = Conv::new(
+            (16, image_depth, 3, 3),
+            (2, 2),
+            initializer.clone(),
+            Some(activation),
+        );
+        let l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
+        let model = Model::new(
+            vec![Box::new(l1), Box::new(l2)],
+            Box::new(gd),
+            Arc::clone(&mse),
+        );
+
+        let input = Array::from((
+            image_dimensions.clone(),
+            (0..input_size)
+                .map(|_| rng.gen_range(-1.0..1.0))
+                .collect::<Vec<Float>>(),
+        ));
+
+        let target = Array::from((
+            output_dimensions.clone(),
+            (0..output_size)
+                .map(|_| rng.gen_range(0.0..1.0))
+                .collect::<Vec<Float>>(),
+        ));
+
+        test_gradient(model, mse, input, target);
     }
 
     #[test]

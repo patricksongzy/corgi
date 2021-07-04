@@ -16,14 +16,14 @@ pub struct Conv {
 
 impl Conv {
     /// Constructs a new convolutional layer, with given dimensions.
+    /// The filter dimensions are filter count by image depth by filter rows by filter columns.
     pub fn new(
-        image_depth: usize,
-        filter_dimensions: (usize, usize, usize),
+        filter_dimensions: (usize, usize, usize, usize),
         stride_dimensions: (usize, usize),
         initializer: Initializer,
         activation: Option<Activation>,
     ) -> Conv {
-        let (filter_count, filter_rows, filter_cols) = filter_dimensions;
+        let (filter_count, image_depth, filter_rows, filter_cols) = filter_dimensions;
 
         let filter_dimensions = vec![filter_count, image_depth, filter_rows, filter_cols];
         let filter_size = filter_dimensions.iter().product();
@@ -70,7 +70,7 @@ mod tests {
     use crate::{activation, initializer};
 
     #[test]
-    fn test_backward() {
+    fn test_smoke() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
@@ -85,13 +85,12 @@ mod tests {
         let initializer = initializer::make_he();
         let activation = activation::make_relu();
         let mut l1 = Conv::new(
-            image_depth,
-            (16, 3, 3),
+            (16, image_depth, 3, 3),
             (2, 2),
             initializer.clone(),
             Some(activation),
         );
-        let mut l2 = Conv::new(16, (1, 2, 2), (2, 2), initializer.clone(), None);
+        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
 
         for _ in 0..8 {
             let input = Array::from((

@@ -62,7 +62,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_backward() {
+    fn test_smoke() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 

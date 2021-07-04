@@ -94,13 +94,13 @@ impl Array {
     ) -> Array {
         let dimension_count = unrolled.dimensions.len();
         let (image_depth, image_rows, image_cols) = image_dimensions;
-        let (_, stride_cols) = stride_dimensions;
+        let (stride_rows, stride_cols) = stride_dimensions;
         let (filter_rows, filter_cols) = filter_dimensions;
 
         // the number of unrolled rows
         let unrolled_count = unrolled.dimensions[dimension_count - 2];
         // the length of each unrolled row
-        let unrolled_size = unrolled.dimensions[dimension_count - 1] / image_depth;
+        let unrolled_size = filter_rows * filter_cols;
 
         // the number of values in strided to
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
@@ -116,26 +116,19 @@ impl Array {
             .collect();
 
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
-            for i in 0..image_depth {
-                let depth_offset = i * image_rows * image_cols;
-                // the starting col of the unrolled matrix since depths are on the same row
-                let skipped = i * filter_rows * filter_cols;
-                for j in 0..unrolled_count {
-                    // the position of the top-left corner of the current filter
-                    let (stride_row_index, stride_col_index) =
-                        (j / col_stride_count, j % col_stride_count);
-                    let stride_offset =
-                        stride_cols * stride_col_index + image_cols * stride_row_index;
-                    for k in 0..unrolled_size {
-                        // the position inside the filter
-                        let (filter_row_index, filter_col_index) =
-                            (k / filter_cols, k % filter_cols);
-                        let filter_offset = filter_col_index + image_cols * filter_row_index;
+            for i in 0..unrolled_count {
+                let (stride_row, stride_col) = (i / col_stride_count, i % col_stride_count);
+                let stride_offset = image_cols * stride_rows * stride_row + stride_cols * stride_col;
+                for j in 0..unrolled_size * image_depth {
+                    let (current_depth, filter_index) = (j / unrolled_size, j % unrolled_size);
+                    let depth_offset = image_rows * image_cols * current_depth;
+                    let input_index = j + unrolled_size * image_depth * i;
 
-                        let output_index = stride_offset + filter_offset + depth_offset;
-                        let input_index = k + skipped + unrolled_size * image_depth * j;
-                        output_slice[output_index] = arrays[0][input_index];
-                    }
+                    let (filter_row, filter_col) = (filter_index / filter_cols, filter_index % filter_cols);
+                    let filter_row_offset = image_cols * filter_row;
+
+                    let output_index = filter_col + filter_row_offset + depth_offset + stride_offset;
+                    output_slice[output_index] = arrays[0][input_index];
                 }
             }
         });
@@ -269,6 +262,9 @@ impl Array {
         // convert convolved dimensions to (filter count, row stride count, col stride count)
         convolved.expand_conv((row_stride_count, col_stride_count))
     }
+
+    // pub fn pool(&self, pool_dimensions: (usize, usize)) {
+    // }
 }
 
 #[cfg(test)]
@@ -378,6 +374,43 @@ mod tests {
     }
 
     #[test]
+    fn test_conv_multi() {
+        let input_dimensions = vec![3, 9, 9];
+        let input_size = input_dimensions.iter().product();
+        let input_values = (0..input_size)
+            .map(|x| (x % 3) as Float)
+            .collect();
+
+        let f1_dimensions = vec![16, 3, 3, 3];
+        let f1_size = f1_dimensions.iter().product();
+        let f1_values = (0..f1_size)
+            .map(|x| (x % 2) as Float)
+            .collect();
+        
+        let f2_dimensions = vec![1, 16, 2, 2];
+        let f2_size = f2_dimensions.iter().product();
+        let f2_values = (0..f2_size)
+            .map(|x| (x % 5) as Float)
+            .collect();
+
+        let stride_dimensions = (2, 2);
+
+        let a = Array::from((input_dimensions, input_values)).tracked();
+        let f1 = Array::from((f1_dimensions, f1_values)).tracked();
+        let f2 = Array::from((f2_dimensions, f2_values)).tracked();
+
+        let b = a.conv(&f1, stride_dimensions);
+        let mut result = b.conv(&f2, stride_dimensions);
+
+        result.backward(None);
+
+        assert_eq!(f2.gradient().unwrap()[f2_size - 1], 58.0);
+        assert_eq!(f1.gradient().unwrap()[f1_size - 1], 32.0);
+        assert_eq!(b.gradient().unwrap()[b.gradient().unwrap().values.len() - 1], 3.0);
+        assert_eq!(a.gradient().unwrap()[input_size - 1], 15.0);
+    }
+
+    #[test]
     fn test_conv_strided() {
         let a = arr![
             arr![arr![1.0, 2.0, 3.0, 4.0], arr![5.0, 6.0, 7.0, 8.0]],
@@ -402,20 +435,28 @@ mod tests {
             ]
         );
 
-        conv.backward(None);
+        conv.backward(Some(arr![arr![
+            arr![arr![1.0, 2.0], arr![3.0, 4.0]],
+            arr![arr![5.0, 6.0], arr![7.0, 8.0]],
+            arr![arr![9.0, 10.0], arr![11.0, 12.0]]
+        ]]));
+
         assert_eq!(
             a.gradient().unwrap(),
             arr![
-                arr![arr![5.0, 11.0, 5.0, 11.0], arr![5.0, 11.0, 5.0, 11.0]],
-                arr![arr![5.0, 19.0, 5.0, 19.0], arr![5.0, 19.0, 5.0, 19.0]]
+                arr![arr![17.0, 47.0, 22.0, 58.0], arr![27.0, 69.0, 32.0, 80.0]],
+                arr![
+                    arr![29.0, 115.0, 34.0, 134.0],
+                    arr![39.0, 153.0, 44.0, 172.0]
+                ]
             ]
         );
         assert_eq!(
             filters.gradient().unwrap(),
             arr![
-                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]],
-                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]],
-                arr![arr![arr![16.0, 20.0]], arr![arr![48.0, 52.0]]]
+                arr![arr![arr![50.0, 60.0]], arr![arr![130.0, 140.0]]],
+                arr![arr![arr![114.0, 140.0]], arr![arr![322.0, 348.0]]],
+                arr![arr![arr![178.0, 220.0]], arr![arr![514.0, 556.0]]]
             ]
         );
     }
