@@ -117,17 +117,31 @@ impl Array {
 
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for i in 0..unrolled_count {
-                let (stride_row, stride_col) = (i / col_stride_count, i % col_stride_count);
-                let stride_offset = image_cols * stride_rows * stride_row + stride_cols * stride_col;
+                let stride_offset = {
+                    let stride_row_index = i / col_stride_count;
+                    let stride_col_index = i % col_stride_count;
+
+                    let stride_row_offset = image_cols * stride_rows * stride_row_index;
+                    let stride_col_offset = stride_cols * stride_col_index;
+
+                    stride_row_offset + stride_col_offset
+                };
+
                 for j in 0..unrolled_size * image_depth {
-                    let (current_depth, filter_index) = (j / unrolled_size, j % unrolled_size);
-                    let depth_offset = image_rows * image_cols * current_depth;
+                    let current_depth = j / unrolled_size;
+                    let filter_index = j % unrolled_size;
+
                     let input_index = j + unrolled_size * image_depth * i;
+                    let output_index = {
+                        let depth_offset = image_rows * image_cols * current_depth;
 
-                    let (filter_row, filter_col) = (filter_index / filter_cols, filter_index % filter_cols);
-                    let filter_row_offset = image_cols * filter_row;
+                        let filter_row_index = filter_index / filter_cols;
+                        let filter_col_index = filter_index % filter_cols;
+                        let filter_row_offset = image_cols * filter_row_index;
 
-                    let output_index = filter_col + filter_row_offset + depth_offset + stride_offset;
+                        filter_col_index + filter_row_offset + depth_offset + stride_offset
+                    };
+
                     output_slice[output_index] = arrays[0][input_index];
                 }
             }
@@ -377,21 +391,15 @@ mod tests {
     fn test_conv_multi() {
         let input_dimensions = vec![3, 9, 9];
         let input_size = input_dimensions.iter().product();
-        let input_values = (0..input_size)
-            .map(|x| (x % 3) as Float)
-            .collect();
+        let input_values = (0..input_size).map(|x| (x % 3) as Float).collect();
 
         let f1_dimensions = vec![16, 3, 3, 3];
         let f1_size = f1_dimensions.iter().product();
-        let f1_values = (0..f1_size)
-            .map(|x| (x % 2) as Float)
-            .collect();
-        
+        let f1_values = (0..f1_size).map(|x| (x % 2) as Float).collect();
+
         let f2_dimensions = vec![1, 16, 2, 2];
         let f2_size = f2_dimensions.iter().product();
-        let f2_values = (0..f2_size)
-            .map(|x| (x % 5) as Float)
-            .collect();
+        let f2_values = (0..f2_size).map(|x| (x % 5) as Float).collect();
 
         let stride_dimensions = (2, 2);
 
@@ -406,7 +414,10 @@ mod tests {
 
         assert_eq!(f2.gradient().unwrap()[f2_size - 1], 58.0);
         assert_eq!(f1.gradient().unwrap()[f1_size - 1], 32.0);
-        assert_eq!(b.gradient().unwrap()[b.gradient().unwrap().values.len() - 1], 3.0);
+        assert_eq!(
+            b.gradient().unwrap()[b.gradient().unwrap().values.len() - 1],
+            3.0
+        );
         assert_eq!(a.gradient().unwrap()[input_size - 1], 15.0);
     }
 
