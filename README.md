@@ -99,8 +99,10 @@ assert_eq!(a.gradient(), arr![232420.0]);
 But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' with other words sounded awkward, such as 'cogi', for 'cog-intelligence',
 so the name Corgi was chosen.
 
-## Acknowledgements
+## Resources
 * Shields are from [shields.io](https://shields.io).
+* MIT 6.034 on OpenCourseWare for a primer on Backward Propagation.
+* CS231n YouTube recordings for a primer on Convolutional Neural Networks.
 
 ## Licence
 * MIT
