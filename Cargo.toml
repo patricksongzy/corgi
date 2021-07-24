@@ -3,7 +3,7 @@ name = "corgi"
 description = "Machine learning, and automatic differentation implementation for Rust"
 keywords = ["machine-learning", "neural-network", "deep-learning", "autograd", "tensor"]
 categories = ["mathematics", "science"]
-version = "0.9.4"
+version = "0.9.5"
 authors = ["Patrick Song <32438365+patricksongzy@users.noreply.github.com>"]
 readme = "README.md"
 homepage = "https://github.com/patricksongzy/corgi"
@@ -16,8 +16,11 @@ edition = "2018"
 [dependencies]
 rand = "0.8.3"
 approx = "0.4.0"
-libc = { version = "0.2", optional = true }
+cblas-sys = { version = "0.1", optional = true }
+blas-src = { version = "0.8", optional = true}
 
 [features]
 f32 = []
-blas = ["libc"]
+blas = []
+openblas = ["blas", "cblas-sys", "blas-src/openblas"]
+netlib = ["blas", "cblas-sys", "blas-src/netlib"]

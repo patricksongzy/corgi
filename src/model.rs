@@ -93,8 +93,8 @@ mod tests {
         for i in 0..length {
             let parameters = Model::parameters(&mut model.layers);
             let value_length = parameters[i].values().len();
-            let dimensions = Arc::new(parameters[i].dimensions().clone());
-            let gradient = parameters[i].gradient().unwrap().clone();
+            let dimensions = parameters[i].dimensions().clone();
+            let gradient = parameters[i].gradient().to_owned().unwrap().clone();
             std::mem::drop(parameters);
 
             let mut numerator = 0.0;
@@ -103,7 +103,7 @@ mod tests {
             for j in 0..value_length {
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
-                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((dimensions.clone(), delta));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -117,7 +117,7 @@ mod tests {
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = -2.0 * epsilon;
-                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((dimensions.clone(), delta));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -131,7 +131,7 @@ mod tests {
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
-                let delta = Array::from((Arc::clone(&dimensions), Arc::new(delta)));
+                let delta = Array::from((dimensions.clone(), delta));
 
                 let mut parameters = Model::parameters(&mut model.layers);
                 let parameter = &mut parameters[i];
@@ -221,14 +221,14 @@ mod tests {
         );
 
         let input = Array::from((
-            image_dimensions.clone(),
+            image_dimensions,
             (0..input_size)
                 .map(|_| rng.gen_range(-1.0..1.0))
                 .collect::<Vec<Float>>(),
         ));
 
         let target = Array::from((
-            output_dimensions.clone(),
+            output_dimensions,
             (0..output_size)
                 .map(|_| rng.gen_range(0.0..1.0))
                 .collect::<Vec<Float>>(),

@@ -1,89 +1,20 @@
 //! A wrapper for CBLAS.
 //! Reference used: https://doc.rust-lang.org/nomicon/ffi.html
 
+#[cfg(not(feature = "f32"))]
+use cblas_sys::{cblas_daxpy, cblas_dgemm};
+#[cfg(feature = "f32")]
+use cblas_sys::{cblas_saxpy, cblas_sgemm};
+
+use cblas_sys::CBLAS_LAYOUT;
+use cblas_sys::CBLAS_TRANSPOSE;
+
 use crate::numbers::*;
 
 use std::convert::TryInto;
 
-#[cfg(not(feature = "f32"))]
-use libc::c_double;
-#[cfg(feature = "f32")]
-use libc::c_float;
-
-use libc::c_int;
-
-#[repr(C)]
-enum CBLAS_LAYOUT {
-    RowMajor = 101,
-}
-
-#[repr(C)]
-enum CBLAS_TRANSPOSE {
-    NoTrans = 111,
-    Trans = 112,
-}
-
 use self::CBLAS_LAYOUT::*;
 use self::CBLAS_TRANSPOSE::*;
-
-#[link(name = "cblas")]
-extern "C" {
-    #[cfg(not(feature = "f32"))]
-    fn cblas_daxpy(
-        n: c_int,
-        alpha: c_double,
-        x: *const c_double,
-        inc_x: c_int,
-        y: *mut c_double,
-        inc_y: c_int,
-    );
-
-    #[cfg(feature = "f32")]
-    fn cblas_saxpy(
-        n: c_int,
-        alpha: c_float,
-        x: *const c_float,
-        inc_x: c_int,
-        y: *mut c_float,
-        inc_y: c_int,
-    );
-
-    #[cfg(not(feature = "f32"))]
-    fn cblas_dgemm(
-        layout: CBLAS_LAYOUT,
-        trans_a: CBLAS_TRANSPOSE,
-        trans_b: CBLAS_TRANSPOSE,
-        m: c_int,
-        n: c_int,
-        k: c_int,
-        alpha: c_double,
-        a: *const c_double,
-        lda: c_int,
-        b: *const c_double,
-        ldb: c_int,
-        beta: c_double,
-        c: *mut c_double,
-        ldc: c_int,
-    );
-
-    #[cfg(feature = "f32")]
-    fn cblas_sgemm(
-        layout: CBLAS_LAYOUT,
-        trans_a: CBLAS_TRANSPOSE,
-        trans_b: CBLAS_TRANSPOSE,
-        m: c_int,
-        n: c_int,
-        k: c_int,
-        alpha: c_float,
-        a: *const c_float,
-        lda: c_int,
-        b: *const c_float,
-        ldb: c_int,
-        beta: c_float,
-        c: *mut c_float,
-        ldc: c_int,
-    );
-}
 
 pub(crate) fn daxpy_blas(alpha: Float, x: &[Float], y: &mut [Float]) {
     unsafe {
@@ -132,21 +63,21 @@ pub(crate) fn matmul_blas(
     );
 
     let (a_transpose, lda) = if a_transpose {
-        (Trans, output_rows)
+        (CblasTrans, output_rows)
     } else {
-        (NoTrans, sum_len)
+        (CblasNoTrans, sum_len)
     };
 
     let (b_transpose, ldb) = if b_transpose {
-        (Trans, sum_len)
+        (CblasTrans, sum_len)
     } else {
-        (NoTrans, output_cols)
+        (CblasNoTrans, output_cols)
     };
 
     unsafe {
         #[cfg(not(feature = "f32"))]
         cblas_dgemm(
-            RowMajor,
+            CblasRowMajor,
             a_transpose,
             b_transpose,
             output_rows,
@@ -163,7 +94,7 @@ pub(crate) fn matmul_blas(
         );
         #[cfg(feature = "f32")]
         cblas_sgemm(
-            RowMajor,
+            CblasRowMajor,
             a_transpose,
             b_transpose,
             output_rows,

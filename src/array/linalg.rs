@@ -9,14 +9,14 @@ use crate::blas::{daxpy_blas, matmul_blas};
 impl Array {
     /// Reshapes the array into different dimensions
     pub fn reshape(&self, dimensions: Vec<usize>) -> Array {
-        let result = Array::from((Arc::new(dimensions), Arc::clone(&self.values)));
+        let result = Array::from((dimensions, Rc::clone(&self.values)));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(|c, t, x| {
+            let backward_op: BackwardOp = Rc::new(|c, t, x| {
                 vec![if t[0] {
-                    Some(x.reshape(c[0].dimensions()))
+                    Some(x.reshape(c[0].dimensions.clone()))
                 } else {
                     None
                 }]
@@ -44,23 +44,15 @@ impl Array {
             let backward_op: Option<BackwardOp> = if !x.is_tracked && !y.is_tracked {
                 None
             } else {
-                Some(Arc::new(move |_, t, x| {
+                Some(Rc::new(move |_, t, x| {
                     vec![
                         if t[0] {
-                            Some(
-                                -2.0 * &Array::from((
-                                    Arc::clone(&x.dimensions),
-                                    Arc::clone(&x.values),
-                                )),
-                            )
+                            Some(-2.0 * &Array::from((x.dimensions.clone(), Rc::clone(&x.values))))
                         } else {
                             None
                         },
                         if t[1] {
-                            Some(Array::from((
-                                Arc::clone(&x.dimensions),
-                                Arc::clone(&x.values),
-                            )))
+                            Some(Array::from((x.dimensions.clone(), Rc::clone(&x.values))))
                         } else {
                             None
                         },
@@ -236,7 +228,7 @@ impl Array {
                 }
             });
 
-            Some(Arc::new(move |c, t, x| {
+            Some(Rc::new(move |c, t, x| {
                 vec![
                     if t[0] { Some(backward_a(c, x)) } else { None },
                     if t[1] { Some(backward_b(c, x)) } else { None },
@@ -270,7 +262,10 @@ mod tests {
         assert_eq!(reshaped, arr![arr![1.0, 2.0, 3.0, 4.0]]);
 
         reshaped.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![arr![1.0, 1.0], arr![1.0, 1.0]]);
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
+            arr![arr![1.0, 1.0], arr![1.0, 1.0]]
+        );
     }
 
     #[test]
@@ -282,11 +277,11 @@ mod tests {
 
         result.backward(None);
         assert_eq!(
-            b.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
             arr![arr![1.0, 1.0, 1.0], arr![1.0, 1.0, 1.0]]
         );
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![-2.0, -2.0, -2.0], arr![-2.0, -2.0, -2.0]]
         );
     }
@@ -303,11 +298,11 @@ mod tests {
 
         result.backward(None);
         assert_eq!(
-            b.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
             arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]
         );
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![8.0, 8.0, 3.0], arr![8.0, 8.0, 3.0]]
         );
     }
@@ -324,11 +319,11 @@ mod tests {
 
         result.backward(None);
         assert_eq!(
-            b.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
             arr![arr![5.0, 5.0], arr![7.0, 7.0], arr![9.0, 9.0]]
         );
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![8.0, 8.0], arr![8.0, 8.0], arr![3.0, 3.0]]
         );
     }
@@ -349,9 +344,12 @@ mod tests {
         );
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![arr![15.0, 17.0, 19.0]]);
         assert_eq!(
-            a.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
+            arr![arr![15.0, 17.0, 19.0]]
+        );
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
             arr![
                 arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]],
                 arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]
@@ -368,8 +366,8 @@ mod tests {
         assert_eq!(result, arr![arr![2.0, 4.0], arr![4.0, 8.0]]);
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![arr![3.0, 3.0]]);
-        assert_eq!(a.gradient().unwrap(), arr![6.0, 6.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![arr![3.0, 3.0]]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![6.0, 6.0]);
     }
 
     #[test]
@@ -379,7 +377,10 @@ mod tests {
 
         let mut result = Array::matmul((&x, false), (&w, true), None);
         result.backward(None);
-        assert_eq!(w.gradient().unwrap(), arr![arr![5.0, 3.0], arr![5.0, 3.0]]);
+        assert_eq!(
+            w.gradient().to_owned().unwrap(),
+            arr![arr![5.0, 3.0], arr![5.0, 3.0]]
+        );
     }
 
     #[test]
@@ -467,8 +468,8 @@ mod tests {
         let mut result = Array::matmul((&a, false), (&b, true), None);
 
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![arr![9.0, 8.0, 7.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![1.0, 2.0, 3.0]]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![9.0, 8.0, 7.0]]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![arr![1.0, 2.0, 3.0]]);
     }
 
     #[test]
@@ -481,10 +482,13 @@ mod tests {
         assert_eq!(result, arr![arr![21.0], arr![40.0]]);
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![1.0], arr![1.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![5.0], arr![7.0], arr![9.0]]);
+        assert_eq!(c.gradient().to_owned().unwrap(), arr![arr![1.0], arr![1.0]]);
         assert_eq!(
-            a.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
+            arr![arr![5.0], arr![7.0], arr![9.0]]
+        );
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
             arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]
         );
     }
@@ -502,13 +506,16 @@ mod tests {
         );
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![46.0, 46.0, 46.0]]);
         assert_eq!(
-            b.gradient().unwrap(),
+            c.gradient().to_owned().unwrap(),
+            arr![arr![46.0, 46.0, 46.0]]
+        );
+        assert_eq!(
+            b.gradient().to_owned().unwrap(),
             arr![arr![30.0], arr![42.0], arr![54.0]]
         );
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![6.0, 12.0, 18.0], arr![6.0, 12.0, 18.0]]
         );
     }

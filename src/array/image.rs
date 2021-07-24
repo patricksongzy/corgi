@@ -68,7 +68,7 @@ impl Array {
         if !image.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+            let backward_op: BackwardOp = Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::roll_blocks(
                         &x,
@@ -160,7 +160,7 @@ impl Array {
         if !unrolled.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, t, x| {
+            let backward_op: BackwardOp = Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::unroll_blocks(
                         &x,
@@ -206,7 +206,7 @@ impl Array {
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
+            let backward_op: BackwardOp = Rc::new(move |c, _, x| {
                 let mut result = vec![0.0; values_size];
                 let mut delta_index = 0;
                 for k in 0..filter_count {
@@ -216,10 +216,7 @@ impl Array {
                     }
                 }
 
-                vec![Some(Array::from((
-                    Arc::clone(&c[0].dimensions),
-                    Arc::new(result),
-                )))]
+                vec![Some(Array::from((c[0].dimensions.clone(), result)))]
             });
 
             result
@@ -296,7 +293,7 @@ mod tests {
         );
 
         expanded.backward(Some(expanded.clone()));
-        assert_eq!(a.gradient().unwrap(), a.clone());
+        assert_eq!(a.gradient().to_owned().unwrap(), a.clone());
     }
 
     #[test]
@@ -391,15 +388,15 @@ mod tests {
     fn test_conv_multi() {
         let input_dimensions = vec![3, 9, 9];
         let input_size = input_dimensions.iter().product();
-        let input_values = (0..input_size).map(|x| (x % 3) as Float).collect();
+        let input_values: Vec<Float> = (0..input_size).map(|x| (x % 3) as Float).collect();
 
         let f1_dimensions = vec![16, 3, 3, 3];
         let f1_size = f1_dimensions.iter().product();
-        let f1_values = (0..f1_size).map(|x| (x % 2) as Float).collect();
+        let f1_values: Vec<Float> = (0..f1_size).map(|x| (x % 2) as Float).collect();
 
         let f2_dimensions = vec![1, 16, 2, 2];
         let f2_size = f2_dimensions.iter().product();
-        let f2_values = (0..f2_size).map(|x| (x % 5) as Float).collect();
+        let f2_values: Vec<Float> = (0..f2_size).map(|x| (x % 5) as Float).collect();
 
         let stride_dimensions = (2, 2);
 
@@ -412,13 +409,13 @@ mod tests {
 
         result.backward(None);
 
-        assert_eq!(f2.gradient().unwrap()[f2_size - 1], 58.0);
-        assert_eq!(f1.gradient().unwrap()[f1_size - 1], 32.0);
+        assert_eq!(f2.gradient().to_owned().unwrap()[f2_size - 1], 58.0);
+        assert_eq!(f1.gradient().to_owned().unwrap()[f1_size - 1], 32.0);
         assert_eq!(
-            b.gradient().unwrap()[b.gradient().unwrap().values.len() - 1],
+            b.gradient().to_owned().unwrap()[b.gradient().to_owned().unwrap().values.len() - 1],
             3.0
         );
-        assert_eq!(a.gradient().unwrap()[input_size - 1], 15.0);
+        assert_eq!(a.gradient().to_owned().unwrap()[input_size - 1], 15.0);
     }
 
     #[test]
@@ -453,7 +450,7 @@ mod tests {
         ]]));
 
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![
                 arr![arr![17.0, 47.0, 22.0, 58.0], arr![27.0, 69.0, 32.0, 80.0]],
                 arr![
@@ -463,7 +460,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            filters.gradient().unwrap(),
+            filters.gradient().to_owned().unwrap(),
             arr![
                 arr![arr![arr![50.0, 60.0]], arr![arr![130.0, 140.0]]],
                 arr![arr![arr![114.0, 140.0]], arr![arr![322.0, 348.0]]],

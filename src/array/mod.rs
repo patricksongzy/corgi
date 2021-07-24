@@ -20,9 +20,9 @@
 //!
 //! c.backward(None);
 //! assert_eq!(c, arr![195300.0]);
-//! assert_eq!(c.gradient().unwrap(), arr![1.0]);
-//! assert_eq!(b.gradient().unwrap(), arr![97650.0]);
-//! assert_eq!(a.gradient().unwrap(), arr![232420.0]);
+//! assert_eq!(c.gradient().to_owned().unwrap(), arr![1.0]);
+//! assert_eq!(b.gradient().to_owned().unwrap(), arr![97650.0]);
+//! assert_eq!(a.gradient().to_owned().unwrap(), arr![232420.0]);
 //! # }
 //! ```
 
@@ -42,8 +42,9 @@ use std::ops::Index;
 
 use std::fmt;
 
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Implementation to construct `Array` structs by flattening other contained `Array` structs, and keeping
 /// their dimensions.
@@ -74,12 +75,12 @@ impl From<Vec<Array>> for Array {
         }
 
         let mut dimensions = vec![contents.len()];
-        dimensions.append(&mut (*contents.first().unwrap().dimensions).clone());
+        dimensions.extend(&contents.first().unwrap().dimensions);
 
         // take ownership if possible, but clone otherwise
         let values = contents
             .into_iter()
-            .map(|array| Arc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
+            .map(|array| Rc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten()
             .collect::<Vec<Float>>();
 
@@ -140,12 +141,12 @@ impl From<Vec<usize>> for Array {
 impl From<(Vec<usize>, Vec<Float>)> for Array {
     fn from(items: (Vec<usize>, Vec<Float>)) -> Self {
         let (dimensions, values) = items;
-        Array::from((Arc::new(dimensions), Arc::new(values)))
+        Array::from((dimensions, Rc::new(values)))
     }
 }
 
-impl From<(Arc<Vec<usize>>, Arc<Vec<Float>>)> for Array {
-    fn from(items: (Arc<Vec<usize>>, Arc<Vec<Float>>)) -> Self {
+impl From<(Vec<usize>, Rc<Vec<Float>>)> for Array {
+    fn from(items: (Vec<usize>, Rc<Vec<Float>>)) -> Self {
         let (dimensions, values) = items;
 
         let is_dimensions_valid = dimensions.iter().all(|d| *d >= 1);
@@ -161,30 +162,29 @@ impl From<(Arc<Vec<usize>>, Arc<Vec<Float>>)> for Array {
         Array {
             dimensions,
             values,
-            children: Arc::new(Mutex::new(Vec::new())),
-            consumer_count: Arc::new(AtomicUsize::new(0)),
+            children: Rc::new(RefCell::new(Vec::new())),
+            consumer_count: Rc::new(AtomicUsize::new(0)),
             backward_op: None,
             is_tracked: false,
             keep_gradient: false,
-            delta: Arc::new(Mutex::new(None)),
-            gradient: Arc::new(Mutex::new(None)),
+            delta: Rc::new(RefCell::new(None)),
+            gradient: Rc::new(RefCell::new(None)),
         }
     }
 }
 
 impl Into<Vec<Float>> for Array {
     fn into(self) -> Vec<Float> {
-        Arc::try_unwrap(self.values).unwrap()
+        Rc::try_unwrap(self.values).unwrap()
     }
 }
 
 /// The sliced operation computes an operation with respect to slices on a mutable output slice.
 type SlicedOp = Box<dyn Fn(&mut [Float], Vec<&[Float]>)>;
 /// The forward operation computes an operation with respect to inputs.
-pub type ForwardOp = Arc<dyn Fn(&[&Array]) -> Array + Send + Sync>;
+pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
 /// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp =
-    Arc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>> + Send + Sync>;
+pub type BackwardOp = Rc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>>>;
 
 /// An n-dimensional differentiable array. Stored in row-major order.
 ///
@@ -204,15 +204,15 @@ pub type BackwardOp =
 /// # }
 /// ```
 pub struct Array {
-    dimensions: Arc<Vec<usize>>,
-    values: Arc<Vec<Float>>,
-    children: Arc<Mutex<Vec<Array>>>,
-    consumer_count: Arc<AtomicUsize>,
+    dimensions: Vec<usize>,
+    values: Rc<Vec<Float>>,
+    children: Rc<RefCell<Vec<Array>>>,
+    consumer_count: Rc<AtomicUsize>,
     backward_op: Option<BackwardOp>,
     is_tracked: bool,
     keep_gradient: bool,
-    delta: Arc<Mutex<Option<Array>>>,
-    gradient: Arc<Mutex<Option<Array>>>,
+    delta: Rc<RefCell<Option<Array>>>,
+    gradient: Rc<RefCell<Option<Array>>>,
 }
 
 // TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
@@ -253,11 +253,11 @@ macro_rules! arr {
 }
 
 /// Computes the element-wise dimensions to broadcast to.
-fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usize> {
+fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
     let (mut longer, other) = if x.len() > y.len() {
-        ((**x).clone(), y)
+        (x.to_owned(), y)
     } else {
-        ((**y).clone(), x)
+        (y.to_owned(), x)
     };
 
     let is_dimensions_valid = longer
@@ -269,7 +269,7 @@ fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usiz
     if !is_dimensions_valid {
         panic!(
             "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
-            *x, *y
+            x, y
         );
     }
 
@@ -283,8 +283,8 @@ fn element_wise_dimensions(x: &Arc<Vec<usize>>, y: &Arc<Vec<usize>>) -> Vec<usiz
 // TODO better error handling
 impl Array {
     /// Returns a copy of the dimensions of the array.
-    pub fn dimensions(&self) -> Vec<usize> {
-        self.dimensions.to_vec()
+    pub fn dimensions(&self) -> &Vec<usize> {
+        &self.dimensions
     }
 
     /// Returns an immutable reference to the values of the array in row-major order.
@@ -292,26 +292,19 @@ impl Array {
         &*self.values
     }
 
-    /// Returns a copy of the gradient of the array.
-    ///
-    /// # Panics
-    ///
-    /// Panics if unable to obtain a lock on the Mutex.
-    pub fn gradient(&self) -> Option<Array> {
-        let gradient_option = self.gradient.lock().unwrap();
-        match gradient_option.as_ref() {
-            Some(x) => Some(x.clone()),
-            None => None,
-        }
+    /// Returns a reference to the gradient option of the array.
+    pub fn gradient(&self) -> Ref<Option<Array>> {
+        self.gradient.borrow()
     }
 
-    /// Returns a guard for the gradient option of the array.
-    ///
-    /// # Panics
-    ///
-    /// Panics if unable to obtain a lock on the Mutex.
-    pub fn gradient_mut(&mut self) -> MutexGuard<Option<Array>> {
-        self.gradient.lock().unwrap()
+    /// Returns a mutable reference to the gradient option of the array.
+    pub fn gradient_mut(&self) -> RefMut<Option<Array>> {
+        self.gradient.borrow_mut()
+    }
+
+    /// Returns the owned gradient option of the array, replacing it with nothing.
+    pub fn replace_gradient(&self) -> Option<Array> {
+        self.gradient.replace(None)
     }
 
     /// Enables tracking of operations for the backward pass, meaning the backward pass will compute, and store
@@ -334,7 +327,7 @@ impl Array {
     /// let b = arr![3.0, 2.0, 1.0].tracked();
     /// let mut c = &a * &b;
     /// c.backward(None);
-    /// assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+    /// assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
     /// # }
     /// ```
     pub fn tracked(mut self) -> Array {
@@ -369,7 +362,7 @@ impl Array {
     /// let b = arr![3.0, 2.0, 1.0].tracked();
     /// let mut c = &a * &b;
     /// c.backward(None);
-    /// assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+    /// assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
     /// # }
     /// ```
     pub fn untracked(mut self) -> Array {
@@ -386,7 +379,7 @@ impl Array {
 
     /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
-        self.children = Arc::new(Mutex::new(children));
+        self.children = Rc::new(RefCell::new(children));
         self.tracked()
     }
 
@@ -398,7 +391,9 @@ impl Array {
 
     /// Propagates the number of consumers to each array in the graph.
     fn propagate_consumers(&mut self) {
-        for child in &mut *self.children.lock().unwrap() {
+        let mut children_guard = self.children.borrow_mut();
+        let children: &mut Vec<Array> = children_guard.as_mut();
+        for child in children {
             if child.is_tracked {
                 child.consumer_count.fetch_add(1, Ordering::Relaxed);
                 // don't double-count consumers
@@ -415,25 +410,25 @@ impl Array {
     ///
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
     pub fn backward(&mut self, delta: Option<Array>) {
-        let mut delta = if self.delta.lock().unwrap().is_none() {
+        let mut delta = if self.delta.borrow_mut().is_none() {
             self.propagate_consumers();
             match delta {
                 Some(x) => x,
                 None => Array::from((
-                    Arc::clone(&self.dimensions),
-                    Arc::new(vec![1.0; self.values.len()]),
+                    self.dimensions.clone(),
+                    Rc::new(vec![1.0; self.values.len()]),
                 )),
             }
         } else {
-            std::mem::replace(&mut *self.delta.lock().unwrap(), None).unwrap()
+            std::mem::replace(&mut *self.delta.borrow_mut(), None).unwrap()
         };
 
         match &self.backward_op {
             Some(x) => {
-                let mut children_guard = self.children.lock().unwrap();
-
                 // TODO some closure to simplify tracked, and untracked operations
-                let is_tracked: Vec<bool> = children_guard
+                let is_tracked: Vec<bool> = self
+                    .children
+                    .borrow_mut()
                     .iter_mut()
                     .map(|c| {
                         let is_tracked = c.is_tracked;
@@ -442,9 +437,10 @@ impl Array {
                     })
                     .collect();
 
-                let delta = (*x)(&mut children_guard, &is_tracked, &mut delta);
+                let delta = (*x)(&mut self.children.borrow_mut(), &is_tracked, &mut delta);
 
-                children_guard
+                self.children
+                    .borrow_mut()
                     .iter_mut()
                     .zip(is_tracked)
                     .filter(|(_, t)| *t)
@@ -454,35 +450,36 @@ impl Array {
                 for (i, delta) in delta.into_iter().enumerate() {
                     if let Some(delta) = delta {
                         {
-                            let mut delta_guard = children_guard[i].delta.lock().unwrap();
-                            match &*delta_guard {
+                            let child_guard = &self.children.borrow()[i];
+                            let mut delta_guard = child_guard.delta.borrow_mut();
+                            match delta_guard.as_ref() {
                                 Some(x) => *delta_guard = Some(x + &delta),
                                 None => {
                                     *delta_guard = Some(
-                                        delta.flatten_to(Arc::clone(&children_guard[i].dimensions)),
+                                        delta.flatten_to(&self.children.borrow()[i].dimensions),
                                     )
                                 }
                             }
                         }
 
-                        let consumer_count = children_guard[i]
+                        let consumer_count = self.children.borrow()[i]
                             .consumer_count
                             .fetch_sub(1, Ordering::Relaxed);
                         if consumer_count == 1 {
-                            children_guard[i].backward(None);
+                            self.children.borrow_mut()[i].backward(None);
                         }
                     }
                 }
             }
             None => {
-                if self.children.lock().unwrap().len() != 0 {
+                if self.children.borrow().len() != 0 {
                     panic!("error: operation is not differentiable")
                 }
             }
         }
 
-        if self.children.lock().unwrap().len() == 0 || self.keep_gradient {
-            let mut gradient_guard = self.gradient.lock().unwrap();
+        if self.children.borrow().len() == 0 || self.keep_gradient {
+            let mut gradient_guard = self.gradient.borrow_mut();
             match &mut *gradient_guard {
                 Some(x) => *gradient_guard = Some(&*x + &delta),
                 None => *gradient_guard = Some(delta),
@@ -611,7 +608,7 @@ impl Array {
     }
 
     /// Flattens the array by summing along dimensions to match the target dimensions.
-    fn flatten_to(self, dimensions: Arc<Vec<usize>>) -> Array {
+    fn flatten_to(self, dimensions: &[usize]) -> Array {
         if self.dimensions == dimensions {
             self
         } else {
@@ -641,24 +638,24 @@ impl Array {
     /// ```
     /// # #[macro_use]
     /// # extern crate corgi;
-    /// # use std::sync::Arc;
+    /// # use std::rc::Rc;
     /// # use corgi::numbers::*;
     /// # use corgi::array::*;
     /// # fn main () {
-    /// let mul: ForwardOp = Arc::new(|x: &[&Array]| {
-    ///     Array::from((x[0].dimensions(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
+    /// let mul: ForwardOp = Rc::new(|x: &[&Array]| {
+    ///     Array::from((x[0].dimensions().clone(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
     /// });
     ///
-    /// let mul_clone = Arc::clone(&mul);
-    /// let backward_op: BackwardOp = Arc::new(move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
+    /// let mul_clone = Rc::clone(&mul);
+    /// let backward_op: BackwardOp = Rc::new(move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
     ///     vec![
     ///         if is_tracked[0] {
-    ///             Some(Array::op(&[&children[1], delta], Arc::clone(&mul_clone), None))
+    ///             Some(Array::op(&[&children[1], delta], Rc::clone(&mul_clone), None))
     ///         } else {
     ///             None
     ///         },
     ///         if is_tracked[1] {
-    ///             Some(Array::op(&[&children[0], delta], Arc::clone(&mul_clone), None))
+    ///             Some(Array::op(&[&children[0], delta], Rc::clone(&mul_clone), None))
     ///         } else {
     ///             None
     ///         }
@@ -670,9 +667,9 @@ impl Array {
     /// let mut product = Array::op(&vec![&a, &b], mul, Some(backward_op));
     /// assert_eq!(product, arr![3.0, 4.0, 3.0]);
     /// product.backward(None);
-    /// assert_eq!(product.gradient().unwrap(), arr![1.0, 1.0, 1.0]);
-    /// assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
-    /// assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
+    /// assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0, 1.0, 1.0]);
+    /// assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
+    /// assert_eq!(a.gradient().to_owned().unwrap(), arr![3.0, 2.0, 1.0]);
     /// # }
     /// ```
     pub fn op(arrays: &[&Array], op: ForwardOp, backward_op: Option<BackwardOp>) -> Array {
@@ -690,20 +687,20 @@ impl Array {
 impl Clone for Array {
     fn clone(&self) -> Array {
         let backward_op = match &self.backward_op {
-            Some(x) => Some(Arc::clone(&x)),
+            Some(x) => Some(Rc::clone(&x)),
             None => None,
         };
 
         Array {
-            dimensions: Arc::clone(&self.dimensions),
-            values: Arc::clone(&self.values),
-            children: Arc::clone(&self.children),
-            consumer_count: Arc::clone(&self.consumer_count),
+            dimensions: self.dimensions.clone(),
+            values: Rc::clone(&self.values),
+            children: Rc::clone(&self.children),
+            consumer_count: Rc::clone(&self.consumer_count),
             backward_op,
             is_tracked: self.is_tracked,
             keep_gradient: self.keep_gradient,
-            delta: Arc::clone(&self.delta),
-            gradient: Arc::clone(&self.gradient),
+            delta: Rc::clone(&self.delta),
+            gradient: Rc::clone(&self.gradient),
         }
     }
 }
@@ -754,7 +751,7 @@ impl RelativeEq for Array {
 impl fmt::Debug for Array {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Array")
-            .field("dimensions", &*self.dimensions)
+            .field("dimensions", &self.dimensions)
             .field("values", &*self.values)
             .field("consumers", &*self.consumer_count)
             .field("tracked", &self.is_tracked)
@@ -827,7 +824,7 @@ mod tests {
             arr![arr![4.0], arr![5.0]]
         ];
 
-        assert_eq!(*matrix.dimensions, vec![3, 2, 1]);
+        assert_eq!(matrix.dimensions, vec![3, 2, 1]);
         assert_eq!(
             *matrix.values,
             (0..6).map(|x| x as Float).collect::<Vec<Float>>()
@@ -837,7 +834,7 @@ mod tests {
     #[test]
     fn test_zeros() {
         let matrix = Array::from(vec![3, 2, 3]);
-        assert_eq!(*matrix.dimensions, vec![3, 2, 3]);
+        assert_eq!(matrix.dimensions, vec![3, 2, 3]);
         assert_eq!(
             *matrix.values,
             (0..18).map(|_| 0 as Float).collect::<Vec<Float>>()
@@ -892,7 +889,7 @@ mod tests {
 
         c.backward(None);
 
-        assert_eq!(a.gradient().unwrap(), arr![2.0, 4.0, 6.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![2.0, 4.0, 6.0]);
     }
 
     #[test]
@@ -961,9 +958,9 @@ mod tests {
         let mut product = &a * &b;
 
         product.backward(None);
-        assert_eq!(product.gradient().unwrap(), arr![1.0]);
-        assert_eq!(*b.gradient.lock().unwrap(), None);
-        assert_eq!(*a.gradient.lock().unwrap(), None);
+        assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0]);
+        assert!(b.gradient().is_none());
+        assert!(a.gradient().is_none());
     }
 
     #[test]
@@ -975,7 +972,10 @@ mod tests {
             b.backward(None);
         }
 
-        assert_eq!(a.gradient().unwrap(), arr![arr![10.0, 20.0, 30.0]]);
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
+            arr![arr![10.0, 20.0, 30.0]]
+        );
     }
 
     #[test]
@@ -986,8 +986,8 @@ mod tests {
         let mut product = &a * &b;
 
         product.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![5.0]);
-        assert_eq!(a.gradient().unwrap(), arr![2.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![5.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![2.0]);
     }
 
     #[test]
@@ -1006,9 +1006,9 @@ mod tests {
         assert_eq!(c, arr![195300.0]);
 
         c.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![1.0]);
-        assert_eq!(b.gradient().unwrap(), arr![97650.0]);
-        assert_eq!(a.gradient().unwrap(), arr![232420.0]);
+        assert_eq!(c.gradient().to_owned().unwrap(), arr![1.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![97650.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![232420.0]);
     }
 
     #[test]
@@ -1019,8 +1019,8 @@ mod tests {
         let mut product = &a * &b;
 
         product.backward(Some(arr![5.0]));
-        assert_eq!(b.gradient().unwrap(), arr![25.0]);
-        assert_eq!(a.gradient().unwrap(), arr![10.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![25.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![10.0]);
     }
 
     #[test]
@@ -1031,8 +1031,14 @@ mod tests {
         let mut product = &a * &b;
 
         product.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![arr![5.0, 2.0], arr![3.0, 1.0]]);
-        assert_eq!(a.gradient().unwrap(), arr![arr![6.0, 3.0], arr![7.0, 8.0]]);
+        assert_eq!(
+            b.gradient().to_owned().unwrap(),
+            arr![arr![5.0, 2.0], arr![3.0, 1.0]]
+        );
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
+            arr![arr![6.0, 3.0], arr![7.0, 8.0]]
+        );
     }
 
     #[test]
@@ -1044,11 +1050,11 @@ mod tests {
         let mut e = (&a * &d).tracked();
 
         e.backward(None);
-        assert_eq!(e.gradient().unwrap(), arr![1.0, 1.0]);
-        assert_eq!(d.gradient().unwrap(), arr![5.0, 2.0]);
-        assert_eq!(c.gradient().unwrap(), arr![5.0, 2.0]);
-        assert_eq!(b.gradient().unwrap(), arr![25.0, 4.0]);
-        assert_eq!(a.gradient().unwrap(), arr![70.0, 16.0]);
+        assert_eq!(e.gradient().to_owned().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(d.gradient().to_owned().unwrap(), arr![5.0, 2.0]);
+        assert_eq!(c.gradient().to_owned().unwrap(), arr![5.0, 2.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![25.0, 4.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![70.0, 16.0]);
     }
 
     #[test]
@@ -1059,9 +1065,9 @@ mod tests {
         let mut product = &c * &a;
 
         product.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![1.0, 2.0]);
-        assert_eq!(b.gradient().unwrap(), arr![11.0, 28.0]);
-        assert_eq!(a.gradient().unwrap(), arr![60.0, 48.0]);
+        assert_eq!(c.gradient().to_owned().unwrap(), arr![1.0, 2.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![11.0, 28.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![60.0, 48.0]);
     }
 
     #[test]
@@ -1073,8 +1079,8 @@ mod tests {
         b = &b * &a;
 
         b.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 1.0]);
-        assert_eq!(a.gradient().unwrap(), arr![7.0, 10.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![7.0, 10.0]);
     }
 
     #[test]
@@ -1086,15 +1092,15 @@ mod tests {
         assert_eq!(b, arr![5.0, 12.0]);
 
         b.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 1.0]);
-        assert_eq!(a.gradient().unwrap(), arr![5.0, 6.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![5.0, 6.0]);
 
         b = &b * &a;
         assert_eq!(b, arr![5.0, 24.0]);
 
         b.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 1.0]);
-        assert_eq!(a.gradient().unwrap(), arr![15.0, 30.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 1.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![15.0, 30.0]);
     }
 
     #[test]

@@ -4,19 +4,19 @@ use crate::numbers::*;
 impl Array {
     /// Computes the ReLU of the array, defined as max(0, x) for all elements x in the array.
     pub fn relu(&self) -> Array {
-        let (values, derivative) = self
+        let (values, derivative): (Vec<Float>, Vec<Float>) = self
             .values
             .iter()
             .map(|&x| if x > 0.0 { (x, 1.0) } else { (0.0, 0.0) })
             .unzip();
 
-        let result = Array::from((Arc::clone(&self.dimensions), Arc::new(values)));
-        let derivative = Array::from((Arc::clone(&self.dimensions), Arc::new(derivative)));
+        let result = Array::from((self.dimensions.clone(), values));
+        let derivative = Array::from((self.dimensions.clone(), derivative));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(&derivative * x)]);
+            let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(&derivative * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -26,28 +26,25 @@ impl Array {
 
     /// Computes the sigmoid operation on each value of the array.
     pub fn sigmoid(&self) -> Array {
-        let values = Arc::new(
+        let values = Rc::new(
             self.values
                 .iter()
                 .map(|x| 1.0 / (1.0 + (-x).exp()))
                 .collect::<Vec<Float>>(),
         );
 
-        let cached = Arc::clone(&values);
-        let result = Array::from((Arc::clone(&self.dimensions), values));
+        let cached = Rc::clone(&values);
+        let result = Array::from((self.dimensions.clone(), values));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
+            let backward_op: BackwardOp = Rc::new(move |c, _, x| {
                 let values = arithmetic::mul_values(
                     &cached.iter().map(|v| v * (1.0 - v)).collect::<Vec<Float>>(),
                     &x.values,
                 );
-                vec![Some(Array::from((
-                    Arc::clone(&c[0].dimensions),
-                    Arc::new(values),
-                )))]
+                vec![Some(Array::from((c[0].dimensions.clone(), values)))]
             });
 
             result
@@ -82,10 +79,16 @@ mod tests {
         assert_eq!(result, arr![arr![1.5, 2.5], arr![1.0, 2.5]]);
 
         result.backward(None);
-        assert_eq!(c.gradient().unwrap(), arr![arr![3.0, 5.0], arr![2.0, 5.0]]);
-        assert_eq!(b.gradient().unwrap(), arr![arr![0.5, 0.5], arr![0.5, 0.5]]);
         assert_eq!(
-            a.gradient().unwrap(),
+            c.gradient().to_owned().unwrap(),
+            arr![arr![3.0, 5.0], arr![2.0, 5.0]]
+        );
+        assert_eq!(
+            b.gradient().to_owned().unwrap(),
+            arr![arr![0.5, 0.5], arr![0.5, 0.5]]
+        );
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
             arr![arr![-0.5, 0.5], arr![-0.75, 0.75]]
         );
     }
@@ -98,7 +101,7 @@ mod tests {
         assert_eq!(result, arr![1.0, 0.0, 0.0]);
 
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![1.0, 0.0, 0.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![1.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -111,8 +114,8 @@ mod tests {
         assert_relative_eq!(result, arr![arr![3.75]]);
 
         result.backward(None);
-        assert_relative_eq!(c.gradient().unwrap(), arr![arr![5.0]]);
-        assert_relative_eq!(b.gradient().unwrap(), arr![arr![0.75]]);
-        assert_relative_eq!(a.gradient().unwrap(), arr![arr![0.9375]]);
+        assert_relative_eq!(c.gradient().to_owned().unwrap(), arr![arr![5.0]]);
+        assert_relative_eq!(b.gradient().to_owned().unwrap(), arr![arr![0.75]]);
+        assert_relative_eq!(a.gradient().to_owned().unwrap(), arr![arr![0.9375]]);
     }
 }

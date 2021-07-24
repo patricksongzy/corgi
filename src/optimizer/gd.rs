@@ -4,6 +4,9 @@ use crate::array::*;
 use crate::numbers::*;
 use crate::optimizer::Optimizer;
 
+#[cfg(feature = "blas")]
+use crate::blas::daxpy_blas;
+
 /// A gradient descent optimizer, which stores the parameters it updates, and the learning rate.
 pub struct GradientDescent {
     learning_rate: Float,
@@ -18,30 +21,61 @@ impl GradientDescent {
 
 impl Optimizer for GradientDescent {
     fn update(&self, parameters: Vec<&mut Array>) {
-        // let (values, gradients): (Vec<_>, Vec<_>) = parameters.iter().map(|p| {
-        //     let gradient = p.gradient();
-        //     if let Some(x) = gradient {
-        //         (p.values().clone(), x.values().clone())
-        //     } else {
-        //         (p.values().clone(), vec![0.0; p.values().len()])
-        //     }
-        // }).unzip();
+        let mut frozen = Vec::new();
+        let mut parameter_values = Vec::new();
+        let mut parameter_gradients = Vec::new();
+        parameters
+            .iter()
+            .filter(|p| {
+                let gradient = p.gradient();
+                if gradient.is_none() {
+                    frozen.push(true);
+                    false
+                } else {
+                    frozen.push(false);
+                    true
+                }
+            })
+            .for_each(|p| {
+                parameter_values.extend(p.values());
+                parameter_gradients.extend(p.replace_gradient().unwrap().values());
+            });
 
-        // let (mut values, gradients): (Vec<Float>, Vec<Float>) = (values.into_iter().flatten().collect(), gradients.into_iter().flatten().collect());
+        #[cfg(not(feature = "blas"))]
+        parameter_values
+            .iter_mut()
+            .zip(parameter_gradients)
+            .for_each(|(x, g): (&mut Float, Float)| {
+                *x -= self.learning_rate * g;
+            });
+        #[cfg(feature = "blas")]
+        daxpy_blas(
+            -self.learning_rate,
+            &parameter_gradients,
+            &mut parameter_values,
+        );
 
-        // Array::axpy(-self.learning_rate, &gradients, &values);
-        // use crate::blas::daxpy_blas;
-        // daxpy_blas(-self.learning_rate, &gradients, &mut values);
+        parameters
+            .into_iter()
+            .zip(frozen)
+            .filter(|(_, f)| !f)
+            .for_each(|(p, _)| {
+                *p = Array::from((
+                    p.dimensions().clone(),
+                    parameter_values
+                        .drain(0..p.values().len())
+                        .collect::<Vec<Float>>(),
+                ))
+                .tracked();
+            });
 
-        for parameter in parameters {
-            // *parameter = Arrays::new((parameter.dimensions(), values.drain(0..parameter.values().len()).collect()));
-            let gradient = parameter.gradient();
-            if let Some(x) = gradient {
+        /*for parameter in parameters {
+            let gradient = parameter.replace_gradient();
+            if let Some(x) = gradient.as_ref() {
                 parameter.stop_tracking();
                 *parameter = Array::axpy(-self.learning_rate, &x, &*parameter);
                 parameter.start_tracking();
-                *parameter.gradient_mut() = None;
             }
-        }
+        }*/
     }
 }

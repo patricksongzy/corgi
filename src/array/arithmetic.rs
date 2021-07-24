@@ -12,14 +12,14 @@ pub(crate) fn mul_values(a: &[Float], b: &[Float]) -> Vec<Float> {
 impl Array {
     /// Computes the reciprocal of each value in the array.
     pub fn reciprocal(&self) -> Array {
-        let values = Arc::new(self.values.iter().map(|x| 1.0 / x).collect());
-        let result = Array::from((Arc::clone(&self.dimensions), values));
+        let values: Vec<Float> = self.values.iter().map(|x| 1.0 / x).collect();
+        let result = Array::from((self.dimensions.clone(), values));
 
         if !self.is_tracked {
             result
         } else {
             let backward_op: BackwardOp =
-                Arc::new(|c, _, x| vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]);
+                Rc::new(|c, _, x| vec![Some(&(-&c[0].reciprocal().powf(2.0)) * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -35,12 +35,12 @@ impl Array {
             .map(|x| x.powf(exponent))
             .collect::<Vec<Float>>();
 
-        let result = Array::from((Arc::clone(&self.dimensions), Arc::new(values)));
+        let result = Array::from((self.dimensions.clone(), values));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
+            let backward_op: BackwardOp = Rc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
 
             result
                 .with_children(vec![self.clone()])
@@ -50,13 +50,13 @@ impl Array {
 
     /// Computes the natural logarithm of all values of the array.
     pub fn ln(&self) -> Array {
-        let values = Arc::new(self.values.iter().map(|x| x.ln()).collect());
-        let result = Array::from((Arc::clone(&self.dimensions), values));
+        let values: Vec<Float> = self.values.iter().map(|x| x.ln()).collect();
+        let result = Array::from((self.dimensions.clone(), values));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
+            let backward_op: BackwardOp = Rc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
 
             result
                 .with_children(vec![self.clone()])
@@ -66,18 +66,18 @@ impl Array {
 
     /// Computes the exponential of all values of the array.
     pub fn exp(&self) -> Array {
-        let values = Arc::new(self.values.iter().map(|x| x.exp()).collect());
+        let values: Vec<Float> = self.values.iter().map(|x| x.exp()).collect();
 
-        let cached = Arc::clone(&values);
-        let result = Array::from((Arc::clone(&self.dimensions), values));
+        let cached = values.clone();
+        let result = Array::from((self.dimensions.clone(), values));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |c, _, x| {
+            let backward_op: BackwardOp = Rc::new(move |c, _, x| {
                 vec![Some(Array::from((
-                    Arc::clone(&c[0].dimensions),
-                    Arc::new(mul_values(&x.values, &cached)),
+                    c[0].dimensions.clone(),
+                    mul_values(&x.values, &cached),
                 )))]
             });
 
@@ -110,7 +110,7 @@ impl Array {
         let backward_op: Option<BackwardOp> = if !self.is_tracked {
             None
         } else {
-            Some(Arc::new(move |c, _, x| {
+            Some(Rc::new(move |c, _, x| {
                 let op: SlicedOp = Box::new(move |output_slice, arrays| {
                     // propagate delta to each summed dimension
                     for output in output_slice.iter_mut() {
@@ -163,7 +163,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
         let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
             None
         } else {
-            Some(Arc::new(move |_, t, x| {
+            Some(Rc::new(move |_, t, x| {
                 vec![
                     if t[0] { Some(x.clone()) } else { None },
                     if t[1] { Some(x.clone()) } else { None },
@@ -197,15 +197,12 @@ impl<'a> ops::Neg for &'a Array {
 
     #[inline]
     fn neg(self) -> Self::Output {
-        let result = Array::from((
-            Arc::clone(&self.dimensions),
-            Arc::new(scale_values(&self.values, -1.0)),
-        ));
+        let result = Array::from((self.dimensions.clone(), scale_values(&self.values, -1.0)));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(-x)]);
+            let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(-x)]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(backward_op)
@@ -227,15 +224,12 @@ impl<'a> ops::Mul<Float> for &'a Array {
 
     #[inline]
     fn mul(self, other: Float) -> Self::Output {
-        let result = Array::from((
-            Arc::clone(&self.dimensions),
-            Arc::new(scale_values(&self.values, other)),
-        ));
+        let result = Array::from((self.dimensions.clone(), scale_values(&self.values, other)));
 
         if !self.is_tracked {
             result
         } else {
-            let backward_op: BackwardOp = Arc::new(move |_, _, x| vec![Some(x * other)]);
+            let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(x * other)]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(backward_op)
@@ -258,7 +252,7 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
         let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
             None
         } else {
-            Some(Arc::new(move |c, t, x| {
+            Some(Rc::new(move |c, t, x| {
                 vec![
                     if t[0] { Some(&c[1] * x) } else { None },
                     if t[1] { Some(&c[0] * x) } else { None },
@@ -266,7 +260,7 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
             }))
         };
 
-        let dimensions = Arc::new(dimensions);
+        let dimensions = Rc::new(dimensions);
         Array::sliced_op(
             vec![self, other],
             &op,
@@ -331,9 +325,9 @@ mod tests {
         assert_eq!(product, arr![-7.0, -16.0, -27.0]);
 
         product.backward(None);
-        assert_eq!(product.gradient().unwrap(), arr![1.0, 1.0, 1.0]);
-        assert_eq!(b.gradient().unwrap(), arr![-1.0, -2.0, -3.0]);
-        assert_eq!(a.gradient().unwrap(), arr![-7.0, -8.0, -9.0]);
+        assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0, 1.0, 1.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![-1.0, -2.0, -3.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![-7.0, -8.0, -9.0]);
     }
 
     #[test]
@@ -345,8 +339,8 @@ mod tests {
         assert_eq!(result, arr![-2.0]);
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![-1.0]);
-        assert_eq!(a.gradient().unwrap(), arr![1.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![-1.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![1.0]);
     }
 
     #[test]
@@ -359,10 +353,13 @@ mod tests {
 
         result.backward(None);
         assert_eq!(
-            b.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
             arr![arr![-0.5, -1.0], arr![-0.25, -2.0]]
         );
-        assert_eq!(a.gradient().unwrap(), arr![arr![0.5, 0.5], arr![0.5, 1.0]]);
+        assert_eq!(
+            a.gradient().to_owned().unwrap(),
+            arr![arr![0.5, 0.5], arr![0.5, 1.0]]
+        );
     }
 
     #[test]
@@ -379,7 +376,7 @@ mod tests {
 
         let mut result = a.ln();
         result.backward(None);
-        assert_relative_eq!(a.gradient().unwrap(), arr![1.0, 0.5]);
+        assert_relative_eq!(a.gradient().to_owned().unwrap(), arr![1.0, 0.5]);
     }
 
     #[test]
@@ -396,8 +393,8 @@ mod tests {
         assert_eq!(result, arr![2.0, 8.0, 12.0]);
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 2.0]);
-        assert_eq!(a.gradient().unwrap(), arr![2.0, 8.0, 12.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 2.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![2.0, 8.0, 12.0]);
     }
 
     #[test]
@@ -420,7 +417,7 @@ mod tests {
             arr![arr![2.0, 2.0, 2.0], arr![2.0, 2.0, 2.0]],
             arr![arr![2.0, 2.0, 2.0], arr![2.0, 2.0, 2.0]]
         ];
-        assert_eq!(a.gradient().unwrap(), gradient_expect);
+        assert_eq!(a.gradient().to_owned().unwrap(), gradient_expect);
     }
 
     #[test]
@@ -431,8 +428,8 @@ mod tests {
         let mut result = &c * &b;
 
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![3.0, 2.0, 1.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -446,15 +443,15 @@ mod tests {
 
         result.backward(None);
         assert_eq!(
-            c.gradient().unwrap(),
+            c.gradient().to_owned().unwrap(),
             arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]]
         );
         assert_eq!(
-            b.gradient().unwrap(),
+            b.gradient().to_owned().unwrap(),
             arr![arr![1.0, 4.0, 9.0], arr![16.0, 25.0, 36.0]]
         );
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![6.0, 8.0, 6.0], arr![48.0, 50.0, 48.0]]
         );
     }
@@ -467,7 +464,7 @@ mod tests {
         assert_eq!(result, arr![arr![0.25, 0.5, 0.25]]);
 
         result.backward(None);
-        assert_eq!(a.gradient().unwrap(), arr![arr![0.0, 0.0, 0.0]]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![0.0, 0.0, 0.0]]);
     }
 
     #[test]
@@ -479,9 +476,9 @@ mod tests {
         assert_eq!(result, arr![arr![1.0, 4.0, 9.0], arr![3.0, 4.0, 3.0]]);
 
         result.backward(None);
-        assert_eq!(b.gradient().unwrap(), arr![4.0, 4.0, 4.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![4.0, 4.0, 4.0]);
         assert_eq!(
-            a.gradient().unwrap(),
+            a.gradient().to_owned().unwrap(),
             arr![arr![1.0, 2.0, 3.0], arr![1.0, 2.0, 3.0]]
         );
     }

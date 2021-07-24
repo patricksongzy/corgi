@@ -3,7 +3,9 @@
 //! Machine learning, and dynamic automatic differentiation implementation.
 
 #[cfg(feature = "blas")]
-extern crate libc;
+extern crate blas_src;
+#[cfg(feature = "blas")]
+extern crate cblas_sys;
 
 #[cfg(test)]
 #[macro_use]
@@ -25,16 +27,16 @@ pub mod optimizer;
 mod tests {
     use super::*;
 
-    use std::sync::Arc;
+    use std::rc::Rc;
 
     use array::*;
     use numbers::*;
 
     #[test]
     fn test_op() {
-        let mul: array::ForwardOp = Arc::new(|x: &[&Array]| {
+        let mul: array::ForwardOp = Rc::new(|x: &[&Array]| {
             Array::from((
-                x[0].dimensions(),
+                x[0].dimensions().clone(),
                 x[0].values()
                     .iter()
                     .zip(x[1].values())
@@ -43,14 +45,14 @@ mod tests {
             ))
         });
 
-        let mul_clone = Arc::clone(&mul);
-        let backward_op: array::BackwardOp = Arc::new(
+        let mul_clone = Rc::clone(&mul);
+        let backward_op: array::BackwardOp = Rc::new(
             move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
                 vec![
                     if is_tracked[0] {
                         Some(Array::op(
                             &vec![&children[1], delta],
-                            Arc::clone(&mul_clone),
+                            Rc::clone(&mul_clone),
                             None,
                         ))
                     } else {
@@ -59,7 +61,7 @@ mod tests {
                     if is_tracked[1] {
                         Some(Array::op(
                             &vec![&children[0], delta],
-                            Arc::clone(&mul_clone),
+                            Rc::clone(&mul_clone),
                             None,
                         ))
                     } else {
@@ -74,8 +76,8 @@ mod tests {
         let mut product = Array::op(&vec![&a, &b], mul, Some(backward_op));
         assert_eq!(product, arr![3.0, 4.0, 3.0]);
         product.backward(None);
-        assert_eq!(product.gradient().unwrap(), arr![1.0, 1.0, 1.0]);
-        assert_eq!(b.gradient().unwrap(), arr![1.0, 2.0, 3.0]);
-        assert_eq!(a.gradient().unwrap(), arr![3.0, 2.0, 1.0]);
+        assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0, 1.0, 1.0]);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![3.0, 2.0, 1.0]);
     }
 }
