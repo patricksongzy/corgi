@@ -43,9 +43,7 @@ use std::ops::Index;
 use std::fmt;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
 
 /// Implementation to construct `Array` structs by flattening other contained `Array` structs, and keeping
 /// their dimensions.
@@ -166,9 +164,9 @@ impl From<(Arc<Vec<usize>>, Arc<Vec<Float>>)> for Array {
             children: Arc::new(Mutex::new(Vec::new())),
             consumer_count: Arc::new(AtomicUsize::new(0)),
             backward_op: None,
-            tx: Arc::new(Mutex::new(None)),
             is_tracked: false,
             keep_gradient: false,
+            delta: Arc::new(Mutex::new(None)),
             gradient: Arc::new(Mutex::new(None)),
         }
     }
@@ -211,9 +209,9 @@ pub struct Array {
     children: Arc<Mutex<Vec<Array>>>,
     consumer_count: Arc<AtomicUsize>,
     backward_op: Option<BackwardOp>,
-    tx: Arc<Mutex<Option<Sender<Array>>>>,
     is_tracked: bool,
     keep_gradient: bool,
+    delta: Arc<Mutex<Option<Array>>>,
     gradient: Arc<Mutex<Option<Array>>>,
 }
 
@@ -398,44 +396,10 @@ impl Array {
         self
     }
 
-    /// Awaits for deltas from all consumers, then continues the backward pass.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the current node has no consumers (is an end node).
-    fn await_results(&mut self, rx: Receiver<Array>, delta: Array) {
-        let mut consumer_count = self.consumer_count.load(Ordering::Relaxed);
-        if consumer_count == 0 {
-            self.backward(Some(delta));
-            return;
-        }
-
-        let mut delta = Arc::try_unwrap(delta.flatten_to(Arc::clone(&self.dimensions)).values)
-            .unwrap_or_else(|x| (*x).clone());
-        consumer_count -= 1;
-        let sum = |acc: &mut Vec<Float>, x: &Vec<Float>| {
-            acc.iter_mut().zip(x).for_each(|(s, x)| *s += *x);
-        };
-
-        while consumer_count > 0 {
-            let received = rx.recv().unwrap();
-            consumer_count -= 1;
-            sum(
-                &mut delta,
-                &received.flatten_to(Arc::clone(&self.dimensions)).values,
-            );
-        }
-
-        self.consumer_count.store(0, Ordering::Relaxed);
-        *self.tx.lock().unwrap() = None;
-
-        let delta = Array::from((Arc::clone(&self.dimensions), Arc::new(delta)));
-        self.backward(Some(delta));
-    }
-
     /// Propagates the number of consumers to each array in the graph.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
+            println!("{:?}", child);
             if child.is_tracked {
                 child.consumer_count.fetch_add(1, Ordering::Relaxed);
                 // don't double-count consumers
@@ -452,15 +416,17 @@ impl Array {
     ///
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
     pub fn backward(&mut self, delta: Option<Array>) {
-        let mut delta = match delta {
-            Some(x) => x,
-            None => {
-                self.propagate_consumers();
-                Array::from((
+        let mut delta = if self.delta.lock().unwrap().is_none() {
+            self.propagate_consumers();
+            match delta {
+                Some(x) => x,
+                None => Array::from((
                     Arc::clone(&self.dimensions),
                     Arc::new(vec![1.0; self.values.len()]),
-                ))
+                )),
             }
+        } else {
+            std::mem::replace(&mut *self.delta.lock().unwrap(), None).unwrap()
         };
 
         match &self.backward_op {
@@ -485,33 +451,28 @@ impl Array {
                     .filter(|(_, t)| *t)
                     .for_each(|(c, _)| c.start_tracking());
 
-                let mut handles = Vec::new();
                 // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
                     if let Some(delta) = delta {
-                        let mut tx_guard = children_guard[i].tx.lock().unwrap();
-                        match &*tx_guard {
-                            Some(x) => {
-                                x.send(delta).unwrap();
-                            }
-                            None => {
-                                let mut child = children_guard[i].clone();
-
-                                let (tx, rx) = channel();
-                                *tx_guard = Some(tx);
-                                handles.push(thread::spawn(move || {
-                                    child.await_results(rx, delta);
-                                }));
+                        {
+                            let mut delta_guard = children_guard[i].delta.lock().unwrap();
+                            match &*delta_guard {
+                                Some(x) => *delta_guard = Some(x + &delta),
+                                None => {
+                                    *delta_guard = Some(
+                                        delta.flatten_to(Arc::clone(&children_guard[i].dimensions)),
+                                    )
+                                }
                             }
                         }
-                    }
-                }
 
-                // wait for all threads to finish
-                for handle in handles {
-                    handle
-                        .join()
-                        .expect("error: could not join backward pass threads");
+                        let consumer_count = children_guard[i]
+                            .consumer_count
+                            .fetch_sub(1, Ordering::Relaxed);
+                        if consumer_count == 1 {
+                            children_guard[i].backward(None);
+                        }
+                    }
                 }
             }
             None => {
@@ -740,10 +701,10 @@ impl Clone for Array {
             children: Arc::clone(&self.children),
             consumer_count: Arc::clone(&self.consumer_count),
             backward_op,
-            tx: Arc::clone(&self.tx),
             is_tracked: self.is_tracked,
             keep_gradient: self.keep_gradient,
-            gradient: self.gradient.clone(),
+            delta: Arc::clone(&self.delta),
+            gradient: Arc::clone(&self.gradient),
         }
     }
 }
@@ -796,6 +757,8 @@ impl fmt::Debug for Array {
         f.debug_struct("Array")
             .field("dimensions", &*self.dimensions)
             .field("values", &*self.values)
+            .field("consumers", &*self.consumer_count)
+            .field("tracked", &self.is_tracked)
             .finish()
     }
 }
