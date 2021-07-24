@@ -399,7 +399,6 @@ impl Array {
     /// Propagates the number of consumers to each array in the graph.
     fn propagate_consumers(&mut self) {
         for child in &mut *self.children.lock().unwrap() {
-            println!("{:?}", child);
             if child.is_tracked {
                 child.consumer_count.fetch_add(1, Ordering::Relaxed);
                 // don't double-count consumers

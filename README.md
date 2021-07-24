@@ -89,20 +89,16 @@ assert_eq!(a.gradient(), arr![232420.0]);
 * Tracked arrays are arrays which require gradients to be computed, and stored.
 * For more information, see the documentation for `tracked()`, and `untracked()` in `array.rs`.
 
-## Backward Pass
-* An informal UML sequence diagram (it's not entirely up to specs, but should give an overview of the process):
-
-![Informal UML sequence diagram](https://raw.githubusercontent.com/patricksongzy/corgi/main/doc/image/sequence.svg?sanitize=true)
-
 ## Name
 * Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).
-But as it turns out, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' with other words sounded awkward, such as 'cogi', for 'cog-intelligence',
-so the name Corgi was chosen.
+But, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' with other words sounded awkward, such as 'cogi', for 'cog-intelligence', so the name Corgi was chosen.
 
 ## Resources
 * Shields are from [shields.io](https://shields.io).
 * MIT 6.034 on OpenCourseWare for a primer on Backward Propagation.
 * CS231n YouTube recordings for a primer on Convolutional Neural Networks.
+
+A lot of the library was built around being as dynamic as possible, meaning if chosen well, some design choices might be similar to other dynamic computational graph libraries.
 
 ## Licence
 * MIT
