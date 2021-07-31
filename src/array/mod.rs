@@ -260,20 +260,14 @@ fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
         (y.to_owned(), x)
     };
 
-    let is_dimensions_valid = longer
-        .iter()
-        .rev()
-        .zip(other.iter().rev())
-        .all(|(&l, &o)| l == o || l == 1 || o == 1);
-
-    if !is_dimensions_valid {
-        panic!(
-            "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
-            x, y
-        );
-    }
-
     for (l, o) in longer.iter_mut().rev().zip(other.iter().rev()) {
+        if !(*l == *o || *l == 1 || *o == 1) {
+            panic!(
+                "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
+                x, y
+            );
+        }
+
         *l = std::cmp::max(*l, *o);
     }
 
@@ -515,8 +509,8 @@ impl Array {
         skip_count: usize,
         flatten_count: usize,
     ) -> Array {
-        let is_dimensions_valid = arrays.iter().all(|a| {
-            a.dimensions
+        let is_dimensions_valid = arrays.iter().all(|v| {
+            v.dimensions
                 .iter()
                 .rev()
                 .skip(skip_count)
@@ -538,45 +532,32 @@ impl Array {
         // total length of the slices
         let group_lengths: Vec<usize> = arrays
             .iter()
-            .map(|a| a.dimensions.iter().rev().take(skip_count).product())
+            .map(|v| v.dimensions.iter().rev().take(skip_count).product())
             .collect();
         let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
 
-        let mut indices = vec![0; input_dimensions.len()];
+        let mut indices = vec![0; std::cmp::max(input_dimensions.len(), output_dimensions.len())];
         let mut output_values = vec![0.0; output_length];
         for _ in 0..leading_length {
             let slices = arrays
                 .iter()
                 .enumerate()
-                .map(|(i, a)| {
-                    let offset = flatten_indices(&indices, &a.dimensions);
-                    &a.values[offset..offset + group_lengths[i]]
+                .map(|(i, v)| {
+                    let offset = flatten_indices(&indices[0..input_dimensions.len()], &v.dimensions);
+                    &v.values[offset..offset + group_lengths[i]]
                 })
                 .collect();
 
-            let output_indices: Vec<usize> = indices
-                .iter()
-                .copied()
-                .chain(vec![
-                    0;
-                    output_dimensions
-                        .len()
-                        .saturating_sub(input_dimensions.len())
-                ])
-                .collect();
-
-            let output_offset = flatten_indices(&output_indices, &output_dimensions);
-            let output_slice =
-                &mut output_values[output_offset..output_offset + output_group_length];
+            let output_offset = flatten_indices(&indices, &output_dimensions);
+            let output_slice = &mut output_values[output_offset..output_offset + output_group_length];
 
             op(output_slice, slices);
 
-            for j in 0..leading_count {
-                let current = leading_count - j - 1;
-                if indices[current] == input_dimensions[current] - 1 {
-                    indices[current] = 0;
+            for (x, d) in indices.iter_mut().take(leading_count).zip(input_dimensions) {
+                if *x == *d - 1 {
+                    *x = 0;
                 } else {
-                    indices[current] += 1;
+                    *x += 1;
                     break;
                 }
             }
@@ -584,23 +565,20 @@ impl Array {
 
         let mut output_dimensions = output_dimensions.to_vec();
         if flatten_count > 0 {
-            let flattened = output_dimensions
+            let flattened_dimensions = output_dimensions
+                [output_dimensions.len() - flatten_count..output_dimensions.len()]
                 .iter()
-                .rev()
-                .take(flatten_count)
-                .product::<usize>();
-            output_dimensions = output_dimensions
-                .iter()
-                .take(output_dimensions.len() - flatten_count)
-                .copied()
-                .chain(vec![flattened])
-                .collect::<Vec<usize>>();
+                .product();
+
+            let flattened_length = output_dimensions.len() - flatten_count + 1;
+            output_dimensions.truncate(flattened_length);
+            output_dimensions[flattened_length - 1] = flattened_dimensions;
         }
 
         let result = Array::from((output_dimensions, output_values));
         if let Some(backward_op) = backward_op {
             result
-                .with_children(arrays.iter().cloned().cloned().collect())
+                .with_children(arrays.into_iter().cloned().collect())
                 .with_backward_op(backward_op)
         } else {
             result
@@ -784,27 +762,9 @@ impl Index<Vec<usize>> for Array {
 
 /// Converts indices by dimension to a single flattened index.
 fn flatten_indices(indices: &[usize], dimensions: &[usize]) -> usize {
-    let is_indices_valid = indices.len() >= dimensions.len()
-        && indices
-            .iter()
-            .rev()
-            .zip(dimensions.iter().rev())
-            .filter(|&(i, d)| *i >= *d && *d != 1)
-            .peekable()
-            .peek()
-            .is_none();
-
-    if !is_indices_valid {
-        panic!(
-            "error: the indices {:?} are not compatible with the dimensions {:?}",
-            indices, dimensions
-        )
-    }
-
+    // dimensions will always have at least one element
     let mut iter = indices.iter().skip(indices.len() - dimensions.len());
     let first = iter.next().unwrap();
-
-    // dimensions will always have at least one element
     iter.zip(dimensions.iter().skip(1))
         .filter(|&(i, d)| *i < *d || *d != 1)
         .fold(*first, |acc, (i, d)| acc * d + i)

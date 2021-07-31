@@ -68,14 +68,5 @@ impl Optimizer for GradientDescent {
                 ))
                 .tracked();
             });
-
-        /*for parameter in parameters {
-            let gradient = parameter.replace_gradient();
-            if let Some(x) = gradient.as_ref() {
-                parameter.stop_tracking();
-                *parameter = Array::axpy(-self.learning_rate, &x, &*parameter);
-                parameter.start_tracking();
-            }
-        }*/
     }
 }

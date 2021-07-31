@@ -155,9 +155,9 @@ impl Array {
                         "error: the dimensions {:?}, and {:?} are not compatible",
                         a.dimensions, b.dimensions
                     );
-                } else {
-                    sum_len
                 }
+
+                sum_len
             }
         };
 
