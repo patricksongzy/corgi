@@ -28,13 +28,8 @@ impl Optimizer for GradientDescent {
             .iter()
             .filter(|p| {
                 let gradient = p.gradient();
-                if gradient.is_none() {
-                    frozen.push(true);
-                    false
-                } else {
-                    frozen.push(false);
-                    true
-                }
+                frozen.push(gradient.is_none());
+                gradient.is_some()
             })
             .for_each(|p| {
                 parameter_values.extend(p.values());

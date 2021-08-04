@@ -13,14 +13,21 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
 [dependencies]
 rand = "0.8.3"
 approx = "0.4.0"
-cblas-sys = { version = "0.1", optional = true }
-blas-src = { version = "0.8", optional = true}
+mimalloc = { version = "0.1.26", default-features=false }
+cblas-sys = { version = "0.1.4", optional = true }
+openblas-src = { version = "0.10.4", optional = true}
+netlib-src = { version = "0.8.0", optional = true}
 
 [features]
 f32 = []
 blas = []
-openblas = ["blas", "cblas-sys", "blas-src/openblas"]
-netlib = ["blas", "cblas-sys", "blas-src/netlib"]
+openblas = ["blas", "cblas-sys", "openblas-src/static"]
+netlib = ["blas", "cblas-sys", "netlib-src/static"]

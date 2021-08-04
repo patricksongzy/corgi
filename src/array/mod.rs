@@ -36,11 +36,10 @@ use crate::numbers::*;
 use approx::{AbsDiffEq, RelativeEq};
 
 use std::convert::{From, Into};
+use std::fmt;
 
 use std::ops;
 use std::ops::Index;
-
-use std::fmt;
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -541,10 +540,10 @@ impl Array {
         for _ in 0..leading_length {
             let slices = arrays
                 .iter()
-                .enumerate()
-                .map(|(i, v)| {
+                .zip(group_lengths.iter())
+                .map(|(v, g)| {
                     let offset = flatten_indices(&indices[0..input_dimensions.len()], &v.dimensions);
-                    &v.values[offset..offset + group_lengths[i]]
+                    &v.values[offset..offset + g]
                 })
                 .collect();
 
@@ -766,7 +765,7 @@ fn flatten_indices(indices: &[usize], dimensions: &[usize]) -> usize {
     let mut iter = indices.iter().skip(indices.len() - dimensions.len());
     let first = iter.next().unwrap();
     iter.zip(dimensions.iter().skip(1))
-        .filter(|&(i, d)| *i < *d || *d != 1)
+        .filter(|&(_, d)| *d != 1)
         .fold(*first, |acc, (i, d)| acc * d + i)
 }
 

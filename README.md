@@ -79,10 +79,10 @@ assert_eq!(a.gradient(), arr![232420.0]);
 * [Custom operation](https://github.com/patricksongzy/corgi/blob/main/src/lib.rs#L34) (still needs some work).
 
 ## Design
-* Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
+* Eager execution.
 * Dynamic-as-possible computational graph.
+* Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
 * Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
-* Graph became more, and more dependent on threading for the backward pass, and the use of `Arc`, and `Mutex`.
 * Graphs do note store consumers (at the moment). They store consumer counts instead.
 
 ### Tracked Arrays
