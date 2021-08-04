@@ -79,7 +79,7 @@ mod tests {
 
     fn test_gradient(mut model: Model, cost: CostFunction, input: Array, target: Array) {
         #[cfg(feature = "f32")]
-        let epsilon = 1e-2;
+        let epsilon = 0.1;
         #[cfg(not(feature = "f32"))]
         let epsilon = 1e-7;
 

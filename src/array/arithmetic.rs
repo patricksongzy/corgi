@@ -154,9 +154,11 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     fn add(self, other: &Array) -> Self::Output {
         let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
 
+        let self_length = *self.dimensions.last().unwrap();
+        let other_length = *other.dimensions.last().unwrap();
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for (i, output) in output_slice.iter_mut().enumerate() {
-                *output = arrays[0][i] + arrays[1][i];
+                *output = arrays[0][i % self_length] + arrays[1][i % other_length];
             }
         });
 
@@ -177,7 +179,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
             backward_op,
             &dimensions,
             &dimensions,
-            0,
+            1,
             0,
         )
     }
@@ -243,9 +245,12 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
         let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
+
+        let self_length = *self.dimensions.last().unwrap();
+        let other_length = *other.dimensions.last().unwrap();
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for (i, output) in output_slice.iter_mut().enumerate() {
-                *output = arrays[0][i] * arrays[1][i];
+                *output = arrays[0][i % self_length] * arrays[1][i % other_length];
             }
         });
 
@@ -267,7 +272,7 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
             backward_op,
             &dimensions,
             &dimensions,
-            0,
+            1,
             0,
         )
     }

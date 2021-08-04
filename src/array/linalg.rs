@@ -148,14 +148,10 @@ impl Array {
                 }
             } else {
                 let sum_len = a.dimensions[a.dimensions.len() - a_index];
-                if b.dimensions.len() >= b_index
-                    && sum_len != b.dimensions[b.dimensions.len() - b_index]
-                {
-                    panic!(
-                        "error: the dimensions {:?}, and {:?} are not compatible",
-                        a.dimensions, b.dimensions
-                    );
-                }
+                assert!(b.dimensions.len() < b_index || sum_len == b.dimensions[b.dimensions.len() - b_index], 
+                    "error: the dimensions {:?}, and {:?} are not compatible",
+                    a.dimensions, b.dimensions
+                );
 
                 sum_len
             }
@@ -173,26 +169,26 @@ impl Array {
             })
             .collect();
 
-        if let Some(c) = c {
+        let set_output = if let Some(c) = c {
             if c.values.len() != 1 {
                 let is_cols_valid = c.dimensions[c.dimensions.len() - 1] == output_cols;
                 let is_rows_valid = c.dimensions.len() < 2
                     || c.dimensions[c.dimensions.len() - 2] == 1
                     || c.dimensions[c.dimensions.len() - 2] == output_rows;
 
-                if !is_cols_valid || !is_rows_valid {
-                    panic!("error: the dimensions {:?} cannot be broadcast to the output dimensions {:?}", c.dimensions, output_dimensions);
-                }
+                assert!(is_cols_valid && is_rows_valid, "error: the dimensions {:?} cannot be broadcast to the output dimensions {:?}", c.dimensions, output_dimensions);
             }
-        }
+
+            true
+        } else {
+            false
+        };
 
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
-            arrays[2]
-                .iter()
-                .cycle()
-                .take(output_slice.len())
-                .enumerate()
-                .for_each(|(i, x)| output_slice[i] = *x);
+            if set_output {
+                let slice_length = output_slice.len();
+                output_slice.iter_mut().zip(arrays[2].iter().cycle().take(slice_length)).for_each(|(o, v)| *o = *v);
+            }
             #[cfg(feature = "blas")]
             matmul_blas(
                 (output_rows, output_cols, sum_len),

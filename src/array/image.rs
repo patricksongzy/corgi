@@ -231,9 +231,7 @@ impl Array {
         let filter_dimension_count = filters.dimensions.len();
         let unrolled_dimension_count = dimension_count - 1;
 
-        if dimension_count < 3 || filter_dimension_count < 3 {
-            panic!("error: cannot convolve with fewer than 3 dimensions");
-        }
+        assert!(dimension_count >= 3 && filter_dimension_count >= 3, "error: cannot convolve with fewer than 3 dimensions");
 
         let (stride_rows, stride_cols) = stride_dimensions;
 

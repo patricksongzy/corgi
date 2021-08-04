@@ -69,9 +69,7 @@ impl From<Vec<Array>> for Array {
             None => true,
         };
 
-        if !is_dimensions_valid {
-            panic!("error: contained array dimensions must all be the same");
-        }
+        assert!(is_dimensions_valid, "error: contained array dimensions must all be the same");
 
         let mut dimensions = vec![contents.len()];
         dimensions.extend(&contents.first().unwrap().dimensions);
@@ -149,14 +147,10 @@ impl From<(Vec<usize>, Rc<Vec<Float>>)> for Array {
         let (dimensions, values) = items;
 
         let is_dimensions_valid = dimensions.iter().all(|d| *d >= 1);
-        if !is_dimensions_valid {
-            panic!("error: invalid dimensions {:?}", dimensions);
-        }
+        assert!(is_dimensions_valid, "error: invalid dimensions {:?}", dimensions);
 
         let is_values_valid = dimensions.iter().product::<usize>() == values.len();
-        if !is_values_valid {
-            panic!("error: dimensions, and values must be of the same length");
-        }
+        assert!(is_values_valid, "error: dimensions, and values must be of the same length");
 
         Array {
             dimensions,
@@ -260,12 +254,7 @@ fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
     };
 
     for (l, o) in longer.iter_mut().rev().zip(other.iter().rev()) {
-        if !(*l == *o || *l == 1 || *o == 1) {
-            panic!(
-                "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
-                x, y
-            );
-        }
+        assert!(*l == *o || *l == 1 || *o == 1, "error: element-wise operation dimensions, {:?}, and {:?} must be matching", x, y);
 
         *l = std::cmp::max(*l, *o);
     }
@@ -465,9 +454,7 @@ impl Array {
                 }
             }
             None => {
-                if self.children.borrow().len() != 0 {
-                    panic!("error: operation is not differentiable")
-                }
+                assert!(self.children.borrow().len() == 0, "error: backward pass called on non-differentiable operation");
             }
         }
 
@@ -519,9 +506,7 @@ impl Array {
             })
         };
 
-        if !is_dimensions_valid {
-            panic!("error: unable to broadcast arrays to target dimensions");
-        }
+        assert!(is_dimensions_valid, "error: unable to broadcast arrays to target dimensions");
 
         // total length of the leading values
         let leading_length = input_dimensions
@@ -561,22 +546,8 @@ impl Array {
                 .zip(&group_lengths)
                 .map(|(v, &g)| &v.values[0..g])
                 .collect();
-            for _ in 0..leading_length {
-                // let slices = arrays
-                //     .iter()
-                //     .zip(&group_lengths)
-                //     .enumerate()
-                //     .map(|(n, (v, g))| {
-                //         let offset =
-                //             flatten_indices(&indices[0..input_dimensions.len()], &v.dimensions);
-                //         if offset != flat_indices[n] {
-                //             println!("PROBLEM PROBLEM {} {}", flat_indices[n], offset);
-                //         }
-                //         &v.values[offset..offset + g]
-                //     })
-                //     .collect();
-                // let slices = arrays.iter().zip(&group_lengths).zip(&flat_indices).map(|((v, g), &i)| &v.values[i..i + g]).collect();
 
+            for _ in 0..leading_length {
                 let output_offset = flatten_indices(&indices, &output_dimensions);
                 let output_slice =
                     &mut output_values[output_offset..output_offset + output_group_length];
@@ -791,12 +762,7 @@ impl Index<usize> for Array {
     type Output = Float;
 
     fn index(&self, index: usize) -> &Self::Output {
-        if index >= self.values.len() {
-            panic!(
-                "error: the index {} is not compatible with the dimensions {:?}",
-                index, self.dimensions
-            );
-        }
+        assert!(index < self.values.len(), "error: the index {} is not compatible with the dimensions {:?}", index, self.dimensions);
 
         &self.values[index]
     }
