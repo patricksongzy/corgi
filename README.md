@@ -16,14 +16,6 @@
 </p>
 <hr>
 
-## BLAS
-* The BLAS feature can be enabled, and requires CBLAS if used.
-
-## Important Design Notes
-* Array values should never be modified from operations; instead, new arrays should be created.
-* Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
-* Versions 0.y.z of Corgi are considered unstable, so check the releases page on Github for new versions.
-
 ## Examples
 * For fully-connected examples, remember to call `model.update()`.
 * Fully-connected [MNIST](https://github.com/patricksongzy/corgi-sample/blob/main/src/main.rs) (convolutional neural networks are in-progress).
@@ -78,12 +70,21 @@ assert_eq!(a.gradient(), arr![232420.0]);
 ```
 * [Custom operation](https://github.com/patricksongzy/corgi/blob/main/src/lib.rs#L34) (still needs some work).
 
+## Important Design Notes
+* Array values should never be modified from operations; instead, new arrays should be created.
+* Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
+* Versions prior to 0.9.7 of Corgi did not prioritise optimisation, and will be slow.
+
+
 ## Design
 * Eager execution.
 * Dynamic-as-possible computational graph.
 * Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
 * Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
 * Graphs do note store consumers (at the moment). They store consumer counts instead.
+
+## BLAS
+* The `opeblas`, or `netlib` features can be enabled, and requires CBLAS if used.
 
 ### Tracked Arrays
 * Tracked arrays are arrays which require gradients to be computed, and stored.

@@ -179,7 +179,7 @@ impl Into<Vec<Float>> for Array {
 }
 
 /// The sliced operation computes an operation with respect to slices on a mutable output slice.
-type SlicedOp = Box<dyn Fn(&mut [Float], Vec<&[Float]>)>;
+type SlicedOp = Box<dyn Fn(&mut [Float], &Vec<&[Float]>)>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
 /// The backward operation computes deltas with respect to inputs.
@@ -493,7 +493,7 @@ impl Array {
     /// * `op` - The `SlicedOp`, which takes in slices of the arrays, and modifies the output slice.
     /// * `input_dimensions` - The target dimensions to broadcast inputs to.
     /// * `output_dimensions` - The output dimensions of the operation.
-    /// * `skip_count` - The number of dimensions which form the input slices.
+    /// * `op_dimension_count` - The number of dimensions which form the input slices.
     /// * `flatten_count` - The number of dimensions which are flattened in the output.
     ///
     /// # Panics
@@ -505,59 +505,111 @@ impl Array {
         backward_op: Option<BackwardOp>,
         input_dimensions: &[usize],
         output_dimensions: &[usize],
-        skip_count: usize,
+        op_dimension_count: usize,
         flatten_count: usize,
     ) -> Array {
-        let is_dimensions_valid = arrays.iter().all(|v| {
-            v.dimensions
-                .iter()
-                .rev()
-                .skip(skip_count)
-                .zip(input_dimensions.iter().rev().skip(skip_count))
-                .all(|(x, y)| *x == 1 || *x == *y)
-        });
+        let is_dimensions_valid = {
+            arrays.iter().all(|v| {
+                v.dimensions
+                    .iter()
+                    .rev()
+                    .skip(op_dimension_count)
+                    .zip(input_dimensions.iter().rev().skip(op_dimension_count))
+                    .all(|(x, y)| *x == 1 || *x == *y)
+            })
+        };
 
         if !is_dimensions_valid {
             panic!("error: unable to broadcast arrays to target dimensions");
         }
 
         // total length of the leading values
-        let leading_length = input_dimensions.iter().rev().skip(skip_count).product();
+        let leading_length = input_dimensions
+            .iter()
+            .rev()
+            .skip(op_dimension_count)
+            .product();
         // total length of the output
         let output_length = output_dimensions.iter().product();
 
         // count of leading dimensions
-        let leading_count = input_dimensions.len().saturating_sub(skip_count);
+        let leading_count = input_dimensions.len().saturating_sub(op_dimension_count);
         // total length of the slices
         let group_lengths: Vec<usize> = arrays
             .iter()
-            .map(|v| v.dimensions.iter().rev().take(skip_count).product())
+            .map(|v| v.dimensions.iter().rev().take(op_dimension_count).product())
             .collect();
         let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
 
         let mut indices = vec![0; std::cmp::max(input_dimensions.len(), output_dimensions.len())];
         let mut output_values = vec![0.0; output_length];
-        for _ in 0..leading_length {
+        if leading_count == 0 {
             let slices = arrays
                 .iter()
-                .zip(group_lengths.iter())
-                .map(|(v, g)| {
-                    let offset = flatten_indices(&indices[0..input_dimensions.len()], &v.dimensions);
-                    &v.values[offset..offset + g]
-                })
+                .enumerate()
+                .map(|(n, v)| &v.values[0..group_lengths[n]])
                 .collect();
 
-            let output_offset = flatten_indices(&indices, &output_dimensions);
-            let output_slice = &mut output_values[output_offset..output_offset + output_group_length];
+            let output_slice = &mut output_values[0..output_group_length];
+            op(output_slice, &slices);
+        // else if all dimensions match
+        // else (broadcast)
+        } else {
+            let mut flat_indices = vec![0; arrays.len()];
+            let mut slices = arrays
+                .iter()
+                .zip(&group_lengths)
+                .map(|(v, &g)| &v.values[0..g])
+                .collect();
+            for _ in 0..leading_length {
+                // let slices = arrays
+                //     .iter()
+                //     .zip(&group_lengths)
+                //     .enumerate()
+                //     .map(|(n, (v, g))| {
+                //         let offset =
+                //             flatten_indices(&indices[0..input_dimensions.len()], &v.dimensions);
+                //         if offset != flat_indices[n] {
+                //             println!("PROBLEM PROBLEM {} {}", flat_indices[n], offset);
+                //         }
+                //         &v.values[offset..offset + g]
+                //     })
+                //     .collect();
+                // let slices = arrays.iter().zip(&group_lengths).zip(&flat_indices).map(|((v, g), &i)| &v.values[i..i + g]).collect();
 
-            op(output_slice, slices);
+                let output_offset = flatten_indices(&indices, &output_dimensions);
+                let output_slice =
+                    &mut output_values[output_offset..output_offset + output_group_length];
 
-            for (x, d) in indices.iter_mut().take(leading_count).zip(input_dimensions) {
-                if *x == *d - 1 {
-                    *x = 0;
-                } else {
-                    *x += 1;
-                    break;
+                op(output_slice, &slices);
+
+                for (i, (x, d)) in indices
+                    .iter_mut()
+                    .zip(input_dimensions)
+                    .enumerate()
+                    .rev()
+                    .skip(op_dimension_count)
+                {
+                    if *x == *d - 1 {
+                        *x = 0;
+                    } else {
+                        for (((index, slice), array), group_length) in flat_indices
+                            .iter_mut()
+                            .zip(slices.iter_mut())
+                            .zip(&arrays)
+                            .zip(&group_lengths)
+                        {
+                            if i < array.dimensions.len().saturating_sub(op_dimension_count)
+                                && array.dimensions[i] != 1
+                            {
+                                *index += group_length;
+                                *slice = &array.values[*index..*index + group_length];
+                            }
+                        }
+
+                        *x += 1;
+                        break;
+                    }
                 }
             }
         }
@@ -589,12 +641,11 @@ impl Array {
         if self.dimensions == dimensions {
             self
         } else {
-            let op: SlicedOp =
-                Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
-                    for (i, output) in output_slice.iter_mut().enumerate() {
-                        *output += arrays[0][i];
-                    }
-                });
+            let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                for (i, output) in output_slice.iter_mut().enumerate() {
+                    *output += arrays[0][i];
+                }
+            });
 
             Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, 0, 0)
         }

@@ -93,7 +93,7 @@ impl Array {
             return self.clone();
         }
 
-        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+        let op: SlicedOp = Box::new(move |output_slice, arrays| {
             output_slice[0] = arrays[0].iter().sum();
         });
 
@@ -154,7 +154,7 @@ impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
     fn add(self, other: &Array) -> Self::Output {
         let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
 
-        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+        let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for (i, output) in output_slice.iter_mut().enumerate() {
                 *output = arrays[0][i] + arrays[1][i];
             }
@@ -243,7 +243,7 @@ impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
         let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
-        let op: SlicedOp = Box::new(move |output_slice: &mut [Float], arrays: Vec<&[Float]>| {
+        let op: SlicedOp = Box::new(move |output_slice, arrays| {
             for (i, output) in output_slice.iter_mut().enumerate() {
                 *output = arrays[0][i] * arrays[1][i];
             }

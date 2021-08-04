@@ -4,12 +4,12 @@
 
 extern crate mimalloc;
 
-#[cfg(feature = "openblas")]
-extern crate openblas_src;
-#[cfg(feature = "netlib")]
-extern crate netlib_src;
 #[cfg(feature = "blas")]
 extern crate cblas_sys;
+#[cfg(feature = "netlib")]
+extern crate netlib_src;
+#[cfg(feature = "openblas")]
+extern crate openblas_src;
 
 #[cfg(test)]
 #[macro_use]

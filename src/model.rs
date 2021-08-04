@@ -141,7 +141,6 @@ mod tests {
                 std::mem::drop(parameters);
 
                 let numerical_gradient = (error_plus - error_minus) / (2.0 * epsilon);
-                println!("{} {}", gradient[j], numerical_gradient);
                 numerator += ((gradient[j] - numerical_gradient).abs()).powf(2.0);
                 denominator += ((gradient[j] + numerical_gradient).abs()).powf(2.0);
             }
