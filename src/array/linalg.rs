@@ -208,26 +208,22 @@ impl Array {
         let backward_op: Option<BackwardOp> = if !a.is_tracked && !b.is_tracked {
             None
         } else {
-            let backward_a = Box::new(move |c: &mut Vec<Array>, x: &Array| {
-                if a_transpose {
-                    Array::matmul((&c[1], b_transpose), (x, true), None)
-                } else {
-                    Array::matmul((x, false), (&c[1], !b_transpose), None)
-                }
-            });
-
-            let backward_b = Box::new(move |c: &mut Vec<Array>, x: &Array| {
-                if b_transpose {
-                    Array::matmul((&x, true), (&c[0], a_transpose), None)
-                } else {
-                    Array::matmul((&c[0], !a_transpose), (&x, false), None)
-                }
-            });
-
             Some(Rc::new(move |c, t, x| {
                 vec![
-                    if t[0] { Some(backward_a(c, x)) } else { None },
-                    if t[1] { Some(backward_b(c, x)) } else { None },
+                    if t[0] { Some(
+                        if a_transpose {
+                            Array::matmul((&c[1], b_transpose), (x, true), None)
+                        } else {
+                            Array::matmul((x, false), (&c[1], !b_transpose), None)
+                        }
+                    )} else { None },
+                    if t[1] { Some(
+                        if b_transpose {
+                            Array::matmul((&x, true), (&c[0], a_transpose), None)
+                        } else {
+                            Array::matmul((&c[0], !a_transpose), (&x, false), None)
+                        }
+                    )} else { None },
                     if t[2] { Some(x.clone()) } else { None },
                 ]
             }))

@@ -45,6 +45,42 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The sliced operation computes an operation with respect to slices on a mutable output slice.
+type SlicedOp = Box<dyn Fn(&mut [Float], &Vec<&[Float]>)>;
+/// The forward operation computes an operation with respect to inputs.
+pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
+/// The backward operation computes deltas with respect to inputs.
+pub type BackwardOp = Rc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>>>;
+
+/// An n-dimensional differentiable array. Stored in row-major order.
+///
+/// # Examples
+/// ```
+/// # #[macro_use]
+/// # extern crate corgi;
+///
+/// use corgi::array::*;
+///
+/// # fn main() {
+/// let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+/// let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]];
+///
+/// let mut p = &a * &b;
+/// p.backward(None);
+/// # }
+/// ```
+pub struct Array {
+    dimensions: Vec<usize>,
+    values: Rc<Vec<Float>>,
+    children: Rc<RefCell<Vec<Array>>>,
+    consumer_count: Rc<AtomicUsize>,
+    backward_op: Option<BackwardOp>,
+    is_tracked: bool,
+    keep_gradient: bool,
+    delta: Rc<RefCell<Option<Array>>>,
+    gradient: Rc<RefCell<Option<Array>>>,
+}
+
 /// Implementation to construct `Array` structs by flattening other contained `Array` structs, and keeping
 /// their dimensions.
 ///
@@ -170,42 +206,6 @@ impl Into<Vec<Float>> for Array {
     fn into(self) -> Vec<Float> {
         Rc::try_unwrap(self.values).unwrap()
     }
-}
-
-/// The sliced operation computes an operation with respect to slices on a mutable output slice.
-type SlicedOp = Box<dyn Fn(&mut [Float], &Vec<&[Float]>)>;
-/// The forward operation computes an operation with respect to inputs.
-pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
-/// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp = Rc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>>>;
-
-/// An n-dimensional differentiable array. Stored in row-major order.
-///
-/// # Examples
-/// ```
-/// # #[macro_use]
-/// # extern crate corgi;
-///
-/// use corgi::array::*;
-///
-/// # fn main() {
-/// let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
-/// let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]];
-///
-/// let mut p = &a * &b;
-/// p.backward(None);
-/// # }
-/// ```
-pub struct Array {
-    dimensions: Vec<usize>,
-    values: Rc<Vec<Float>>,
-    children: Rc<RefCell<Vec<Array>>>,
-    consumer_count: Rc<AtomicUsize>,
-    backward_op: Option<BackwardOp>,
-    is_tracked: bool,
-    keep_gradient: bool,
-    delta: Rc<RefCell<Option<Array>>>,
-    gradient: Rc<RefCell<Option<Array>>>,
 }
 
 // TODO look into `arr![[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]];`
