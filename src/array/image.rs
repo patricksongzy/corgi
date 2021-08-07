@@ -1,6 +1,7 @@
 use crate::array::*;
 
 impl Array {
+    /// Unrolls an image into rows of blocks with the length of the filter.
     fn unroll_blocks(
         image: &Array,
         stride_dimensions: (usize, usize),
@@ -86,6 +87,7 @@ impl Array {
         }
     }
 
+    /// Inverse of unrolling the blocks.
     fn roll_blocks(
         unrolled: &Array,
         image_dimensions: (usize, usize, usize),
@@ -182,12 +184,13 @@ impl Array {
         let (row_stride_count, col_stride_count) = stride_counts;
         let filter_count = self.dimensions[self.dimensions.len() - 1];
 
-        let values_size = self.values.len();
-        let skip_size = values_size / filter_count;
-        let mut result = vec![0.0; values_size];
+        let values_length = self.values.len();
+        // the stride between two convolution outputs
+        let stride = values_length / filter_count;
+        let mut result = vec![0.0; values_length];
         let mut result_index = 0;
         for k in 0..filter_count {
-            for i in 0..skip_size {
+            for i in 0..stride {
                 result[result_index] = self.values[k + filter_count * i];
                 result_index += 1;
             }
@@ -207,10 +210,10 @@ impl Array {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
-                let mut result = vec![0.0; values_size];
+                let mut result = vec![0.0; values_length];
                 let mut delta_index = 0;
                 for k in 0..filter_count {
-                    for i in 0..skip_size {
+                    for i in 0..stride {
                         result[k + filter_count * i] = x.values[delta_index];
                         delta_index += 1;
                     }
@@ -229,6 +232,7 @@ impl Array {
     pub fn conv(&self, filters: &Array, stride_dimensions: (usize, usize)) -> Array {
         let dimension_count = self.dimensions.len();
         let filter_dimension_count = filters.dimensions.len();
+        // the number of dimensions for the unrolled image
         let unrolled_dimension_count = dimension_count - 1;
 
         assert!(

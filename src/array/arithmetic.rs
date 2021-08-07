@@ -121,9 +121,9 @@ impl Array {
         }
     }
 
-    /// Sums along the last `skip_count` dimensions.
-    pub fn sum(&self, skip_count: usize) -> Array {
-        if skip_count == 0 {
+    /// Sums along the last `dimension_count` dimensions.
+    pub fn sum(&self, dimension_count: usize) -> Array {
+        if dimension_count == 0 {
             return self.clone();
         }
 
@@ -131,13 +131,13 @@ impl Array {
             output_slice[0] = arrays[0].iter().sum();
         });
 
-        let leading_count = self.dimensions.len().saturating_sub(skip_count);
+        let leading_count = self.dimensions.len().saturating_sub(dimension_count);
         let target_dimensions: Vec<usize> = self
             .dimensions
             .iter()
             .copied()
             .take(leading_count)
-            .chain(vec![1; skip_count])
+            .chain(vec![1; dimension_count])
             .collect();
         let target_clone = target_dimensions.clone();
 
@@ -158,7 +158,7 @@ impl Array {
                     None,
                     &target_clone,
                     &c[0].dimensions,
-                    skip_count,
+                    dimension_count,
                     0,
                 ))]
             }))
@@ -170,8 +170,8 @@ impl Array {
             backward_op,
             &self.dimensions,
             &target_dimensions,
-            skip_count,
-            skip_count,
+            dimension_count,
+            dimension_count,
         )
     }
 

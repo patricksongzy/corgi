@@ -478,7 +478,7 @@ impl Array {
     /// This is useful for broadcasting arrays to compatible dimensions.
     ///
     /// Takes in a vector of arrays, slicing them to meet `input_dimensions`, while skipping the
-    /// last `skip_size` dimensions, and performing the operation on the slices, which must have
+    /// last `op_dimension_count` dimensions, and performing the operation on the slices, which must have
     /// length of the product of the skipped dimensions.
     ///
     /// # Arguments
@@ -623,13 +623,16 @@ impl Array {
         if self.dimensions == dimensions {
             self
         } else {
+            let flatten_dimension_count = self.dimensions.len().saturating_sub(dimensions.len());
+
             let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                let stride = output_slice.len();
                 for (i, output) in output_slice.iter_mut().enumerate() {
-                    *output += arrays[0][i];
+                    *output += arrays[0].iter().skip(i).step_by(stride).sum::<Float>();
                 }
             });
 
-            Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, 0, 0)
+            Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, flatten_dimension_count + 1, 0)
         }
     }
 
@@ -914,6 +917,19 @@ mod tests {
         b = &b * &a;
         b.propagate_consumers();
         assert_eq!(*a.consumer_count.borrow(), 2);
+    }
+
+    #[test]
+    fn test_flatten_to() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+        // TODO error checking
+        let result = a.flatten_to(&[3]);
+
+        assert_eq!(result, arr![5.0, 7.0, 9.0]);
+
+        let b = arr![arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]], arr![arr![7.0, 8.0, 9.0], arr![10.0, 11.0, 12.0]]];
+        let result = b.flatten_to(&[3]);
+        assert_eq!(result, arr![22.0, 26.0, 30.0]);
     }
 
     #[test]
