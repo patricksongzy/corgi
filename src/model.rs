@@ -7,20 +7,20 @@ use crate::numbers::*;
 use crate::optimizer::Optimizer;
 
 /// A neural network model, containing the layers of the model, and the outputs.
-pub struct Model {
-    layers: Vec<Box<dyn Layer>>,
+pub struct Model<'a> {
+    layers: Vec<&'a mut dyn Layer>,
     output: Option<Array>,
-    optimizer: Box<dyn Optimizer>,
-    cost: CostFunction,
+    optimizer: &'a dyn Optimizer,
+    cost: &'a CostFunction,
 }
 
-impl Model {
+impl<'a> Model<'a> {
     /// Constructs a new model given the layers.
     pub fn new(
-        layers: Vec<Box<dyn Layer>>,
-        optimizer: Box<dyn Optimizer>,
-        cost: CostFunction,
-    ) -> Model {
+        layers: Vec<&'a mut dyn Layer>,
+        optimizer: &'a dyn Optimizer,
+        cost: &'a CostFunction,
+    ) -> Model<'a> {
         Model {
             layers,
             output: None,
@@ -51,13 +51,14 @@ impl Model {
 
     /// Updates all parameters of the model.
     pub fn update(&mut self) {
-        let parameters = Model::parameters(&mut self.layers);
-        self.optimizer.update(parameters);
+        let optimizer = self.optimizer;
+        let parameters = self.parameters();
+        optimizer.update(parameters);
     }
 
     /// Retrieves the parameters of every layer in the model.
-    fn parameters(layers: &mut Vec<Box<dyn Layer>>) -> Vec<&mut Array> {
-        layers
+    fn parameters(&mut self) -> Vec<&mut Array> {
+        self.layers
             .iter_mut()
             .map(|l| l.parameters())
             .flatten()
@@ -75,9 +76,7 @@ mod tests {
 
     use rand::Rng;
 
-    use std::sync::Arc;
-
-    fn test_gradient(mut model: Model, cost: CostFunction, input: Array, target: Array) {
+    fn test_gradient(mut model: Model<'_>, cost: &CostFunction, input: Array, target: Array) {
         #[cfg(feature = "f32")]
         let epsilon = 0.1;
         #[cfg(not(feature = "f32"))]
@@ -87,11 +86,11 @@ mod tests {
         model.backward(target.clone());
 
         // due to borrow checking, we need to keep re-borrowing, and dropping the parameters
-        let parameters = Model::parameters(&mut model.layers);
+        let parameters = model.parameters();
         let length = parameters.len();
         std::mem::drop(parameters);
         for i in 0..length {
-            let parameters = Model::parameters(&mut model.layers);
+            let parameters = model.parameters();
             let value_length = parameters[i].values().len();
             let dimensions = parameters[i].dimensions().clone();
             let gradient = parameters[i].gradient().to_owned().unwrap().clone();
@@ -105,7 +104,7 @@ mod tests {
                 delta[j] = epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = Model::parameters(&mut model.layers);
+                let mut parameters = model.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
@@ -119,7 +118,7 @@ mod tests {
                 delta[j] = -2.0 * epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = Model::parameters(&mut model.layers);
+                let mut parameters = model.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
@@ -133,7 +132,7 @@ mod tests {
                 delta[j] = epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = Model::parameters(&mut model.layers);
+                let mut parameters = model.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
@@ -161,31 +160,31 @@ mod tests {
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
-        let initializer = initializer::make_he();
-        let sigmoid = activation::make_sigmoid();
-        let softmax = activation::make_softmax();
-        let cross_entropy = cost::make_cross_entropy();
+        let initializer = initializer::he();
+        let sigmoid = activation::sigmoid();
+        let softmax = activation::softmax();
+        let cross_entropy = cost::cross_entropy();
         let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(
+        let mut l1 = Dense::new(
             input_size,
             hidden_size,
-            initializer.clone(),
-            Some(Arc::clone(&sigmoid)),
+            &initializer,
+            Some(&sigmoid),
         );
-        let l2 = Dense::new(
+        let mut l2 = Dense::new(
             hidden_size,
             output_size,
-            initializer.clone(),
-            Some(Arc::clone(&softmax)),
+            &initializer,
+            Some(&softmax),
         );
         let model = Model::new(
-            vec![Box::new(l1), Box::new(l2)],
-            Box::new(gd),
-            Arc::clone(&cross_entropy),
+            vec![&mut l1, &mut l2],
+            &gd,
+            &cross_entropy,
         );
 
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
-        test_gradient(model, cross_entropy, arr![x, y], arr![z, w]);
+        test_gradient(model, &cross_entropy, arr![x, y], arr![z, w]);
     }
 
     #[test]
@@ -201,22 +200,22 @@ mod tests {
         let input_size = image_dimensions.iter().product();
         let output_size = output_dimensions.iter().product();
 
-        let initializer = initializer::make_he();
-        let activation = activation::make_relu();
-        let mse = cost::make_mse();
+        let initializer = initializer::he();
+        let activation = activation::relu();
+        let mse = cost::mse();
         let gd = GradientDescent::new(learning_rate);
 
-        let l1 = Conv::new(
+        let mut l1 = Conv::new(
             (16, image_depth, 3, 3),
             (2, 2),
             initializer.clone(),
             Some(activation),
         );
-        let l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
+        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
         let model = Model::new(
-            vec![Box::new(l1), Box::new(l2)],
-            Box::new(gd),
-            Arc::clone(&mse),
+            vec![&mut l1, &mut l2],
+            &gd,
+            &mse,
         );
 
         let input = Array::from((
@@ -233,7 +232,7 @@ mod tests {
                 .collect::<Vec<Float>>(),
         ));
 
-        test_gradient(model, mse, input, target);
+        test_gradient(model, &mse, input, target);
     }
 
     #[test]
@@ -244,13 +243,13 @@ mod tests {
         let input_size = 2;
         let hidden_size = 16;
         let output_size = 2;
-        let initializer = initializer::make_he();
-        let relu = activation::make_relu();
-        let mse = cost::make_mse();
+        let initializer = initializer::he();
+        let relu = activation::relu();
+        let mse = cost::mse();
         let gd = GradientDescent::new(learning_rate);
-        let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(relu));
-        let l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
-        let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), mse);
+        let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&relu));
+        let mut l2 = Dense::new(hidden_size, output_size, &initializer, None);
+        let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
 
         for _ in 0..8 {
             let mut input = vec![0.0; input_size * batch_size];

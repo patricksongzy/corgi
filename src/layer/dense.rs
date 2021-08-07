@@ -7,20 +7,20 @@ use crate::layer::Layer;
 use crate::numbers::*;
 
 /// A fully-connected neural network layer, storing the parameters of the layer.
-pub struct Dense {
+pub struct Dense<'a> {
     weights: Array,
     biases: Array,
-    activation: Option<Activation>,
+    activation: Option<&'a Activation>,
 }
 
-impl Dense {
+impl<'a> Dense<'a> {
     /// Constructs a new dense layer, with a given input, and output size.
     pub fn new(
         input_size: usize,
         output_size: usize,
-        initializer: Initializer,
-        activation: Option<Activation>,
-    ) -> Dense {
+        initializer: &'_ Initializer,
+        activation: Option<&'a Activation>,
+    ) -> Dense<'a> {
         Dense {
             weights: Array::from((
                 vec![output_size, input_size],
@@ -41,7 +41,7 @@ impl Dense {
     }
 }
 
-impl Layer for Dense {
+impl Layer for Dense<'_> {
     fn forward(&self, input: Array) -> Array {
         let result = Array::matmul((&input, false), (&self.weights, true), Some(&self.biases));
         match &self.activation {
@@ -59,7 +59,8 @@ impl Layer for Dense {
 mod tests {
     use super::*;
 
-    use std::sync::Arc;
+    use crate::activation;
+    use crate::initializer;
 
     #[test]
     fn test_smoke() {
@@ -70,18 +71,15 @@ mod tests {
         let input_size = 1;
         let hidden_size = 16;
         let output_size = 1;
-        let initializer = Arc::new(|x: Float| {
-            let range = 1.0 / x.sqrt();
-            rand::thread_rng().gen_range(-range..=range)
-        });
-        let sigmoid = Arc::new(|x: Array| x.sigmoid());
+        let initializer = initializer::he();
+        let sigmoid = activation::sigmoid();
         let mut l1 = Dense::new(
             input_size,
             hidden_size,
-            initializer.clone(),
-            Some(sigmoid.clone()),
+            &initializer,
+            Some(&sigmoid),
         );
-        let mut l2 = Dense::new(hidden_size, output_size, initializer.clone(), None);
+        let mut l2 = Dense::new(hidden_size, output_size, &initializer, None);
 
         for _ in 0..8 {
             let x = rng.gen_range(-1.0..1.0);

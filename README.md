@@ -21,14 +21,14 @@
 * Fully-connected [MNIST](https://github.com/patricksongzy/corgi-sample/blob/main/src/main.rs) (convolutional neural networks are in-progress).
 * Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
 ```rust
-let initializer = initializer::make_he();
-let relu = activation::make_relu();
-let softmax = activation::make_softmax();
-let ce = cost::make_cross_entropy();
+let initializer = initializer::he();
+let relu = activation::relu();
+let softmax = activation::softmax();
+let ce = cost::cross_entropy();
 let gd = GradientDescent::new(learning_rate);
-let l1 = Dense::new(input_size, hidden_size, initializer.clone(), Some(relu));
-let l2 = Dense::new(hidden_size, output_size, initializer.clone(), Some(softmax));
-let mut model = Model::new(vec![Box::new(l1), Box::new(l2)], Box::new(gd), ce);
+let l1 = Dense::new(input_size, hidden_size, &initializer, Some(&relu));
+let l2 = Dense::new(hidden_size, output_size, &initializer, Some(&softmax));
+let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &ce);
 
 for _ in 0..iterations {
     let mut input = vec![0.0; input_size * batch_size];
@@ -40,8 +40,8 @@ for _ in 0..iterations {
     let input = Array::from((vec![batch_size, input_size], input));
     let target = Array::from((vec![batch_size, output_size], target));
 
-    let _result = model.forward(input.clone());
-    let loss = model.backward(target.clone());
+    let _result = model.forward(input);
+    let loss = model.backward(target);
     // update the parameters, and clear gradients (backward pass only sets gradients)
     model.update();
 

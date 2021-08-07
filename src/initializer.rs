@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub type Initializer = Arc<dyn Fn(Float) -> Float>;
 
 /// Creates a He initializer closure.
-pub fn make_he() -> Initializer {
+pub fn he() -> Initializer {
     Arc::new(|x| {
         let stddev = (2.0 / x).sqrt();
         rand::thread_rng().gen_range(-stddev..=stddev)

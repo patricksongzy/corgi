@@ -82,8 +82,8 @@ mod tests {
         let input_size = image_dimensions.iter().product();
         let output_size = output_dimensions.iter().product();
 
-        let initializer = initializer::make_he();
-        let activation = activation::make_relu();
+        let initializer = initializer::he();
+        let activation = activation::relu();
         let mut l1 = Conv::new(
             (16, image_depth, 3, 3),
             (2, 2),
