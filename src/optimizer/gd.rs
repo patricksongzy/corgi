@@ -56,7 +56,7 @@ impl Optimizer for GradientDescent {
             .filter(|(_, f)| !f)
             .for_each(|(p, _)| {
                 *p = Array::from((
-                    p.dimensions().clone(),
+                    p.dimensions().to_vec(),
                     parameter_values
                         .drain(0..p.values().len())
                         .collect::<Vec<Float>>(),

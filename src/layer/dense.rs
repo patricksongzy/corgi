@@ -73,12 +73,7 @@ mod tests {
         let output_size = 1;
         let initializer = initializer::he();
         let sigmoid = activation::sigmoid();
-        let mut l1 = Dense::new(
-            input_size,
-            hidden_size,
-            &initializer,
-            Some(&sigmoid),
-        );
+        let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&sigmoid));
         let mut l2 = Dense::new(hidden_size, output_size, &initializer, None);
 
         for _ in 0..8 {
@@ -89,7 +84,7 @@ mod tests {
             let r1 = l1.forward(input);
             let r2 = l2.forward(r1);
 
-            let mut error = (&arr![target] - &r2).powf(2.0);
+            let error = (&arr![target] - &r2).powf(2.0);
 
             error.backward(None);
 

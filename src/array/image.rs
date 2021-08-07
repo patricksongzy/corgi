@@ -65,7 +65,7 @@ impl Array {
             0,
         );
 
-        if !image.is_tracked {
+        if !*image.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
@@ -157,7 +157,7 @@ impl Array {
             0,
         );
 
-        if !unrolled.is_tracked {
+        if !*unrolled.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
@@ -203,7 +203,7 @@ impl Array {
 
         let result = Array::from((output_dimensions, result));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
@@ -231,7 +231,10 @@ impl Array {
         let filter_dimension_count = filters.dimensions.len();
         let unrolled_dimension_count = dimension_count - 1;
 
-        assert!(dimension_count >= 3 && filter_dimension_count >= 3, "error: cannot convolve with fewer than 3 dimensions");
+        assert!(
+            dimension_count >= 3 && filter_dimension_count >= 3,
+            "error: cannot convolve with fewer than 3 dimensions"
+        );
 
         let (stride_rows, stride_cols) = stride_dimensions;
 
@@ -284,7 +287,7 @@ mod tests {
     #[test]
     fn test_expand_conv() {
         let a = arr![arr![1.0, 4.0], arr![2.0, 5.0], arr![3.0, 6.0]].tracked();
-        let mut expanded = a.expand_conv((1, 3));
+        let expanded = a.expand_conv((1, 3));
         assert_eq!(
             expanded,
             arr![arr![arr![1.0, 2.0, 3.0]], arr![arr![4.0, 5.0, 6.0]]]
@@ -403,7 +406,7 @@ mod tests {
         let f2 = Array::from((f2_dimensions, f2_values)).tracked();
 
         let b = a.conv(&f1, stride_dimensions);
-        let mut result = b.conv(&f2, stride_dimensions);
+        let result = b.conv(&f2, stride_dimensions);
 
         result.backward(None);
 
@@ -431,7 +434,7 @@ mod tests {
         ]
         .tracked();
 
-        let mut conv = a.conv(&filters, (1, 2));
+        let conv = a.conv(&filters, (1, 2));
         assert_eq!(
             conv,
             arr![

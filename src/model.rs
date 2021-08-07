@@ -43,7 +43,7 @@ impl<'a> Model<'a> {
     /// Computes the backward pass of a model, and updates parameters.
     pub fn backward(&mut self, target: Array) -> Float {
         let output = self.output.as_ref().unwrap();
-        let mut error = (self.cost)(&output, &target);
+        let error = (self.cost)(&output, &target);
         error.backward(None);
 
         error.sum_all()
@@ -92,7 +92,7 @@ mod tests {
         for i in 0..length {
             let parameters = model.parameters();
             let value_length = parameters[i].values().len();
-            let dimensions = parameters[i].dimensions().clone();
+            let dimensions = parameters[i].dimensions().to_vec();
             let gradient = parameters[i].gradient().to_owned().unwrap().clone();
             std::mem::drop(parameters);
 
@@ -165,23 +165,9 @@ mod tests {
         let softmax = activation::softmax();
         let cross_entropy = cost::cross_entropy();
         let gd = GradientDescent::new(learning_rate);
-        let mut l1 = Dense::new(
-            input_size,
-            hidden_size,
-            &initializer,
-            Some(&sigmoid),
-        );
-        let mut l2 = Dense::new(
-            hidden_size,
-            output_size,
-            &initializer,
-            Some(&softmax),
-        );
-        let model = Model::new(
-            vec![&mut l1, &mut l2],
-            &gd,
-            &cross_entropy,
-        );
+        let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&sigmoid));
+        let mut l2 = Dense::new(hidden_size, output_size, &initializer, Some(&softmax));
+        let model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
 
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
         test_gradient(model, &cross_entropy, arr![x, y], arr![z, w]);
@@ -212,11 +198,7 @@ mod tests {
             Some(activation),
         );
         let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
-        let model = Model::new(
-            vec![&mut l1, &mut l2],
-            &gd,
-            &mse,
-        );
+        let model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
 
         let input = Array::from((
             image_dimensions,

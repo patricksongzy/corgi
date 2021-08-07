@@ -4,19 +4,25 @@ use crate::numbers::*;
 impl Array {
     /// Computes the ReLU of the array, defined as max(0, x) for all elements x in the array.
     pub fn relu(&self) -> Array {
-        let (values, derivative): (Vec<Float>, Vec<Float>) = self
+        let values: Vec<Float> = self
             .values
             .iter()
-            .map(|&x| if x > 0.0 { (x, 1.0) } else { (0.0, 0.0) })
-            .unzip();
+            .map(|&x| if x > 0.0 { x } else { 0.0 })
+            .collect();
 
         let result = Array::from((self.dimensions.clone(), values));
-        let derivative = Array::from((self.dimensions.clone(), derivative));
-
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
-            let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(&derivative * x)]);
+            let backward_op: BackwardOp = Rc::new(|c, _, x| {
+                let values: Vec<Float> = c[0]
+                    .values
+                    .iter()
+                    .map(|&x| if x > 0.0 { 1.0 } else { 0.0 })
+                    .collect();
+                let derivative = Array::from((c[0].dimensions.clone(), values));
+                vec![Some(&derivative * x)]
+            });
 
             result
                 .with_children(vec![self.clone()])
@@ -36,7 +42,7 @@ impl Array {
         let cached = Rc::clone(&values);
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
@@ -75,7 +81,7 @@ mod tests {
         let b = arr![arr![3.0, 5.0], arr![2.0, 5.0]].tracked();
         let c = a.softmax().tracked();
 
-        let mut result = &c * &b;
+        let result = &c * &b;
         assert_eq!(result, arr![arr![1.5, 2.5], arr![1.0, 2.5]]);
 
         result.backward(None);
@@ -97,7 +103,7 @@ mod tests {
     fn test_relu() {
         let a = arr![1.0, -2.0, 0.0].tracked();
 
-        let mut result = a.relu();
+        let result = a.relu();
         assert_eq!(result, arr![1.0, 0.0, 0.0]);
 
         result.backward(None);
@@ -110,7 +116,7 @@ mod tests {
         let b = arr![arr![5.0]].tracked();
         let c = a.sigmoid().tracked();
 
-        let mut result = &c * &b;
+        let result = &c * &b;
         assert_relative_eq!(result, arr![arr![3.75]]);
 
         result.backward(None);

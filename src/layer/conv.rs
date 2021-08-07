@@ -110,7 +110,7 @@ mod tests {
             let r1 = l1.forward(input);
             let r2 = l2.forward(r1);
 
-            let mut error = (&target - &r2).powf(2.0);
+            let error = (&target - &r2).powf(2.0);
 
             error.backward(None);
 

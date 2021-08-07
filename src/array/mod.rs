@@ -43,14 +43,13 @@ use std::ops::Index;
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The sliced operation computes an operation with respect to slices on a mutable output slice.
-type SlicedOp = Box<dyn Fn(&mut [Float], &Vec<&[Float]>)>;
+type SlicedOp = Box<dyn Fn(&mut [Float], &[&[Float]])>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
 /// The backward operation computes deltas with respect to inputs.
-pub type BackwardOp = Rc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<Array>>>;
+pub type BackwardOp = Rc<dyn Fn(&[Array], &[bool], &Array) -> Vec<Option<Array>>>;
 
 /// An n-dimensional differentiable array. Stored in row-major order.
 ///
@@ -72,11 +71,11 @@ pub type BackwardOp = Rc<dyn Fn(&mut Vec<Array>, &[bool], &Array) -> Vec<Option<
 pub struct Array {
     dimensions: Vec<usize>,
     values: Rc<Vec<Float>>,
-    children: Rc<RefCell<Vec<Array>>>,
-    consumer_count: Rc<AtomicUsize>,
+    children: Rc<Vec<Array>>,
+    consumer_count: Rc<RefCell<usize>>,
     backward_op: Option<BackwardOp>,
-    is_tracked: bool,
-    keep_gradient: bool,
+    is_tracked: RefCell<bool>,
+    keep_gradient: RefCell<bool>,
     delta: Rc<RefCell<Option<Array>>>,
     gradient: Rc<RefCell<Option<Array>>>,
 }
@@ -105,7 +104,10 @@ impl From<Vec<Array>> for Array {
             None => true,
         };
 
-        assert!(is_dimensions_valid, "error: contained array dimensions must all be the same");
+        assert!(
+            is_dimensions_valid,
+            "error: contained array dimensions must all be the same"
+        );
 
         let mut dimensions = vec![contents.len()];
         dimensions.extend(&contents.first().unwrap().dimensions);
@@ -183,19 +185,26 @@ impl From<(Vec<usize>, Rc<Vec<Float>>)> for Array {
         let (dimensions, values) = items;
 
         let is_dimensions_valid = dimensions.iter().all(|d| *d >= 1);
-        assert!(is_dimensions_valid, "error: invalid dimensions {:?}", dimensions);
+        assert!(
+            is_dimensions_valid,
+            "error: invalid dimensions {:?}",
+            dimensions
+        );
 
         let is_values_valid = dimensions.iter().product::<usize>() == values.len();
-        assert!(is_values_valid, "error: dimensions, and values must be of the same length");
+        assert!(
+            is_values_valid,
+            "error: dimensions, and values must be of the same length"
+        );
 
         Array {
             dimensions,
             values,
-            children: Rc::new(RefCell::new(Vec::new())),
-            consumer_count: Rc::new(AtomicUsize::new(0)),
+            children: Rc::new(Vec::new()),
+            consumer_count: Rc::new(RefCell::new(0)),
             backward_op: None,
-            is_tracked: false,
-            keep_gradient: false,
+            is_tracked: RefCell::new(false),
+            keep_gradient: RefCell::new(false),
             delta: Rc::new(RefCell::new(None)),
             gradient: Rc::new(RefCell::new(None)),
         }
@@ -254,7 +263,12 @@ fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
     };
 
     for (l, o) in longer.iter_mut().rev().zip(other.iter().rev()) {
-        assert!(*l == *o || *l == 1 || *o == 1, "error: element-wise operation dimensions, {:?}, and {:?} must be matching", x, y);
+        assert!(
+            *l == *o || *l == 1 || *o == 1,
+            "error: element-wise operation dimensions, {:?}, and {:?} must be matching",
+            x,
+            y
+        );
 
         *l = std::cmp::max(*l, *o);
     }
@@ -265,12 +279,12 @@ fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
 // TODO better error handling
 impl Array {
     /// Returns a copy of the dimensions of the array.
-    pub fn dimensions(&self) -> &Vec<usize> {
+    pub fn dimensions(&self) -> &[usize] {
         &self.dimensions
     }
 
     /// Returns an immutable reference to the values of the array in row-major order.
-    pub fn values(&self) -> &Vec<Float> {
+    pub fn values(&self) -> &[Float] {
         &*self.values
     }
 
@@ -312,15 +326,15 @@ impl Array {
     /// assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
     /// # }
     /// ```
-    pub fn tracked(mut self) -> Array {
-        self.keep_gradient = true;
-        self.is_tracked = true;
+    pub fn tracked(self) -> Array {
+        self.keep_gradient.replace(true);
+        self.is_tracked.replace(true);
         self
     }
 
-    /// Starts tracking operations for a mutable reference to an array.
-    pub fn start_tracking(&mut self) {
-        self.is_tracked = true;
+    /// Starts tracking operations for a mutable reference to an array, returning the previous value.
+    pub fn start_tracking(&self) -> bool {
+        self.is_tracked.replace(true)
     }
 
     /// Prevents tracking of operations for the backward pass, meaning the backward pass will skip computation of
@@ -347,21 +361,21 @@ impl Array {
     /// assert_eq!(b.gradient().to_owned().unwrap(), arr![1.0, 2.0, 3.0]);
     /// # }
     /// ```
-    pub fn untracked(mut self) -> Array {
-        self.keep_gradient = false;
-        self.is_tracked = false;
+    pub fn untracked(self) -> Array {
+        self.keep_gradient.replace(false);
+        self.is_tracked.replace(false);
         self
     }
 
-    /// Stops tracking operations for a mutable reference to an array. Useful for temporarily updating parameters
-    /// without requiring their gradients.
-    pub fn stop_tracking(&mut self) {
-        self.is_tracked = false;
+    /// Stops tracking operations for a mutable reference to an array, returning the previous value.
+    /// Useful for temporarily updating parameters without requiring their gradients.
+    pub fn stop_tracking(&self) -> bool {
+        self.is_tracked.replace(false)
     }
 
     /// Adds `Vec<Array>` as the children of a vector.
     fn with_children(mut self, children: Vec<Array>) -> Array {
-        self.children = Rc::new(RefCell::new(children));
+        self.children = Rc::new(children);
         self.tracked()
     }
 
@@ -372,14 +386,13 @@ impl Array {
     }
 
     /// Propagates the number of consumers to each array in the graph.
-    fn propagate_consumers(&mut self) {
-        let mut children_guard = self.children.borrow_mut();
-        let children: &mut Vec<Array> = children_guard.as_mut();
-        for child in children {
-            if child.is_tracked {
-                child.consumer_count.fetch_add(1, Ordering::Relaxed);
+    fn propagate_consumers(&self) {
+        for child in self.children.iter() {
+            if *child.is_tracked.borrow() {
+                let mut consumer_count = child.consumer_count.borrow_mut();
+                *consumer_count += 1;
                 // don't double-count consumers
-                if child.consumer_count.load(Ordering::Relaxed) == 1 {
+                if *consumer_count == 1 {
                     child.propagate_consumers();
                 }
             }
@@ -391,78 +404,72 @@ impl Array {
     /// # Panics
     ///
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
-    pub fn backward(&mut self, delta: Option<Array>) {
-        let mut delta = if self.delta.borrow_mut().is_none() {
-            self.propagate_consumers();
-            match delta {
-                Some(x) => x,
-                None => Array::from((
-                    self.dimensions.clone(),
-                    Rc::new(vec![1.0; self.values.len()]),
-                )),
+    pub fn backward(&self, delta: Option<Array>) {
+        let mut delta = {
+            let mut delta_cache = self.delta.borrow_mut();
+            if delta_cache.is_none() {
+                self.propagate_consumers();
+                match delta {
+                    Some(x) => x,
+                    None => Array::from((
+                        self.dimensions.clone(),
+                        Rc::new(vec![1.0; self.values.len()]),
+                    )),
+                }
+            } else {
+                std::mem::replace(&mut *delta_cache, None).unwrap()
             }
-        } else {
-            std::mem::replace(&mut *self.delta.borrow_mut(), None).unwrap()
         };
 
         match &self.backward_op {
             Some(x) => {
-                // TODO some closure to simplify tracked, and untracked operations
-                let is_tracked: Vec<bool> = self
-                    .children
-                    .borrow_mut()
-                    .iter_mut()
-                    .map(|c| {
-                        let is_tracked = c.is_tracked;
-                        c.stop_tracking();
-                        is_tracked
-                    })
-                    .collect();
+                let is_tracked: Vec<bool> =
+                    self.children.iter().map(|c| c.stop_tracking()).collect();
 
-                let delta = (*x)(&mut self.children.borrow_mut(), &is_tracked, &mut delta);
+                let delta = (*x)(&self.children, &is_tracked, &mut delta);
 
                 self.children
-                    .borrow_mut()
-                    .iter_mut()
+                    .iter()
                     .zip(is_tracked)
                     .filter(|(_, t)| *t)
-                    .for_each(|(c, _)| c.start_tracking());
+                    .for_each(|(c, _)| {
+                        c.start_tracking();
+                    });
 
-                // start a new thread which will wait on all consumers
                 for (i, delta) in delta.into_iter().enumerate() {
                     if let Some(delta) = delta {
+                        let child = &self.children[i];
                         {
-                            let child_guard = &self.children.borrow()[i];
-                            let mut delta_guard = child_guard.delta.borrow_mut();
-                            match delta_guard.as_ref() {
-                                Some(x) => *delta_guard = Some(x + &delta),
+                            let mut child_delta_cache = child.delta.borrow_mut();
+                            match child_delta_cache.as_ref() {
+                                Some(x) => *child_delta_cache = Some(x + &delta),
                                 None => {
-                                    *delta_guard = Some(
-                                        delta.flatten_to(&self.children.borrow()[i].dimensions),
-                                    )
+                                    *child_delta_cache = Some(delta.flatten_to(&child.dimensions))
                                 }
                             }
+
+                            *child.consumer_count.borrow_mut() -= 1;
                         }
 
-                        let consumer_count = self.children.borrow()[i]
-                            .consumer_count
-                            .fetch_sub(1, Ordering::Relaxed);
-                        if consumer_count == 1 {
-                            self.children.borrow_mut()[i].backward(None);
+                        if *child.consumer_count.borrow() == 0 {
+                            child.backward(None);
                         }
                     }
                 }
             }
             None => {
-                assert!(self.children.borrow().len() == 0, "error: backward pass called on non-differentiable operation");
+                assert!(
+                    self.children.is_empty(),
+                    "error: backward pass called on non-differentiable operation"
+                );
             }
         }
 
-        if self.children.borrow().len() == 0 || self.keep_gradient {
-            let mut gradient_guard = self.gradient.borrow_mut();
-            match &mut *gradient_guard {
-                Some(x) => *gradient_guard = Some(&*x + &delta),
-                None => *gradient_guard = Some(delta),
+        if self.children.is_empty() || *self.keep_gradient.borrow() {
+            let mut gradient = self.gradient.borrow_mut();
+            match &mut *gradient {
+                Some(x) => *gradient = Some(&*x + &delta),
+                None => *gradient = Some(delta),
             }
         }
     }
@@ -506,7 +513,10 @@ impl Array {
             })
         };
 
-        assert!(is_dimensions_valid, "error: unable to broadcast arrays to target dimensions");
+        assert!(
+            is_dimensions_valid,
+            "error: unable to broadcast arrays to target dimensions"
+        );
 
         // total length of the leading values
         let leading_length = input_dimensions
@@ -529,7 +539,7 @@ impl Array {
         let mut indices = vec![0; std::cmp::max(input_dimensions.len(), output_dimensions.len())];
         let mut output_values = vec![0.0; output_length];
         if leading_count == 0 {
-            let slices = arrays
+            let slices: Vec<&[Float]> = arrays
                 .iter()
                 .enumerate()
                 .map(|(n, v)| &v.values[0..group_lengths[n]])
@@ -537,11 +547,12 @@ impl Array {
 
             let output_slice = &mut output_values[0..output_group_length];
             op(output_slice, &slices);
+        // TODO
         // else if all dimensions match
         // else (broadcast)
         } else {
             let mut flat_indices = vec![0; arrays.len()];
-            let mut slices = arrays
+            let mut slices: Vec<&[Float]> = arrays
                 .iter()
                 .zip(&group_lengths)
                 .map(|(v, &g)| &v.values[0..g])
@@ -642,11 +653,11 @@ impl Array {
     /// # use corgi::array::*;
     /// # fn main () {
     /// let mul: ForwardOp = Rc::new(|x: &[&Array]| {
-    ///     Array::from((x[0].dimensions().clone(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
+    ///     Array::from((x[0].dimensions().to_vec(), x[0].values().iter().zip(x[1].values()).map(|(x, y)| x * y).collect::<Vec<Float>>()))
     /// });
     ///
     /// let mul_clone = Rc::clone(&mul);
-    /// let backward_op: BackwardOp = Rc::new(move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
+    /// let backward_op: BackwardOp = Rc::new(move |children, is_tracked, delta| {
     ///     vec![
     ///         if is_tracked[0] {
     ///             Some(Array::op(&[&children[1], delta], Rc::clone(&mul_clone), None))
@@ -663,7 +674,7 @@ impl Array {
     ///
     /// let a = arr![1.0, 2.0, 3.0].tracked();
     /// let b = arr![3.0, 2.0, 1.0].tracked();
-    /// let mut product = Array::op(&vec![&a, &b], mul, Some(backward_op));
+    /// let product = Array::op(&vec![&a, &b], mul, Some(backward_op));
     /// assert_eq!(product, arr![3.0, 4.0, 3.0]);
     /// product.backward(None);
     /// assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0, 1.0, 1.0]);
@@ -696,8 +707,8 @@ impl Clone for Array {
             children: Rc::clone(&self.children),
             consumer_count: Rc::clone(&self.consumer_count),
             backward_op,
-            is_tracked: self.is_tracked,
-            keep_gradient: self.keep_gradient,
+            is_tracked: RefCell::new(*self.is_tracked.borrow()),
+            keep_gradient: RefCell::new(*self.keep_gradient.borrow()),
             delta: Rc::clone(&self.delta),
             gradient: Rc::clone(&self.gradient),
         }
@@ -748,7 +759,7 @@ impl RelativeEq for Array {
 }
 
 impl fmt::Debug for Array {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Array")
             .field("dimensions", &self.dimensions)
             .field("values", &*self.values)
@@ -762,7 +773,12 @@ impl Index<usize> for Array {
     type Output = Float;
 
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < self.values.len(), "error: the index {} is not compatible with the dimensions {:?}", index, self.dimensions);
+        assert!(
+            index < self.values.len(),
+            "error: the index {} is not compatible with the dimensions {:?}",
+            index,
+            self.dimensions
+        );
 
         &self.values[index]
     }
@@ -861,7 +877,7 @@ mod tests {
     fn test_consumers_drop() {
         let a = arr![1.0, 2.0, 3.0].tracked();
         let _b = &a * &a;
-        let mut c = &a * &a;
+        let c = &a * &a;
 
         c.backward(None);
 
@@ -874,12 +890,12 @@ mod tests {
         let b = arr![2.0].tracked();
 
         let product = &a * &b;
-        let mut sum = &product + &a;
+        let sum = &product + &a;
 
         sum.propagate_consumers();
-        assert_eq!(product.consumer_count.load(Ordering::Relaxed), 1);
-        assert_eq!(b.consumer_count.load(Ordering::Relaxed), 1);
-        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
+        assert_eq!(*product.consumer_count.borrow(), 1);
+        assert_eq!(*b.consumer_count.borrow(), 1);
+        assert_eq!(*a.consumer_count.borrow(), 2);
     }
 
     #[test]
@@ -889,15 +905,15 @@ mod tests {
 
         b = &b * &a;
         b.propagate_consumers();
-        assert!(a.is_tracked);
-        assert!(b.is_tracked);
-        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 1);
+        assert!(*a.is_tracked.borrow());
+        assert!(*b.is_tracked.borrow());
+        assert_eq!(*a.consumer_count.borrow(), 1);
 
-        a.consumer_count.store(0, Ordering::Relaxed);
+        *a.consumer_count.borrow_mut() = 0;
 
         b = &b * &a;
         b.propagate_consumers();
-        assert_eq!(a.consumer_count.load(Ordering::Relaxed), 2);
+        assert_eq!(*a.consumer_count.borrow(), 2);
     }
 
     #[test]
@@ -921,9 +937,9 @@ mod tests {
             vec![arr![2.0], arr![5.0]]
         );
 
-        assert!(a.is_tracked);
-        assert!(b.is_tracked);
-        assert!(product.is_tracked);
+        assert!(*a.is_tracked.borrow());
+        assert!(*b.is_tracked.borrow());
+        assert!(*product.is_tracked.borrow());
     }
 
     #[test]
@@ -931,7 +947,7 @@ mod tests {
         let a = arr![5.0];
         let b = arr![2.0];
 
-        let mut product = &a * &b;
+        let product = &a * &b;
 
         product.backward(None);
         assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0]);
@@ -944,7 +960,7 @@ mod tests {
         let a = arr![arr![1.0, 2.0, 3.0]].tracked();
 
         for _ in 0..5 {
-            let mut b = &a * &a;
+            let b = &a * &a;
             b.backward(None);
         }
 
@@ -959,7 +975,7 @@ mod tests {
         let a = arr![5.0].tracked();
         let b = arr![2.0].tracked();
 
-        let mut product = &a * &b;
+        let product = &a * &b;
 
         product.backward(None);
         assert_eq!(b.gradient().to_owned().unwrap(), arr![5.0]);
@@ -992,7 +1008,7 @@ mod tests {
         let a = arr![5.0].tracked();
         let b = arr![2.0].tracked();
 
-        let mut product = &a * &b;
+        let product = &a * &b;
 
         product.backward(Some(arr![5.0]));
         assert_eq!(b.gradient().to_owned().unwrap(), arr![25.0]);
@@ -1004,7 +1020,7 @@ mod tests {
         let a = arr![arr![5.0, 2.0], arr![3.0, 1.0]].tracked();
         let b = arr![arr![6.0, 3.0], arr![7.0, 8.0]].tracked();
 
-        let mut product = &a * &b;
+        let product = &a * &b;
 
         product.backward(None);
         assert_eq!(
@@ -1023,7 +1039,7 @@ mod tests {
         let b = arr![6.0, 3.0].tracked();
         let c = (&a * &b).tracked();
         let d = (&c + &a).tracked();
-        let mut e = (&a * &d).tracked();
+        let e = (&a * &d).tracked();
 
         e.backward(None);
         assert_eq!(e.gradient().to_owned().unwrap(), arr![1.0, 1.0]);
@@ -1038,7 +1054,7 @@ mod tests {
         let a = arr![1.0, 2.0].tracked();
         let b = arr![5.0, 3.0].tracked();
         let c = (&(&(&a * &b) + &a) * &b).tracked();
-        let mut product = &c * &a;
+        let product = &c * &a;
 
         product.backward(None);
         assert_eq!(c.gradient().to_owned().unwrap(), arr![1.0, 2.0]);
@@ -1083,7 +1099,7 @@ mod tests {
     fn test_backward_untracked() {
         let a = arr![1.0, 2.0].tracked();
         let b = arr![2.0, 1.0];
-        let mut product = &a * &b;
+        let product = &a * &b;
 
         product.backward(None);
         assert!(b.gradient().is_none());
@@ -1095,7 +1111,7 @@ mod tests {
         let a = arr![1.0, 2.0].tracked();
         let b = arr![2.0, 1.0];
         let product = &a * &b;
-        let mut clone = product.clone();
+        let clone = product.clone();
 
         clone.backward(None);
         assert!(b.gradient().is_none());

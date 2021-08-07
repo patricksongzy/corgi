@@ -10,12 +10,46 @@ pub(crate) fn mul_values(a: &[Float], b: &[Float]) -> Vec<Float> {
 }
 
 impl Array {
+    #[inline]
+    fn element_wise_op<F: 'static>(&self, other: &Array, f: F, backward_op: BackwardOp) -> Array
+    where
+        F: Fn(Float, Float) -> Float,
+    {
+        let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
+
+        let self_length = *self.dimensions.last().unwrap();
+        let other_length = *other.dimensions.last().unwrap();
+        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+            for (i, output) in output_slice.iter_mut().enumerate() {
+                *output = f(arrays[0][i % self_length], arrays[1][i % other_length]);
+            }
+        });
+
+        let backward_op: Option<BackwardOp> =
+            if !*self.is_tracked.borrow() && !*other.is_tracked.borrow() {
+                None
+            } else {
+                Some(backward_op)
+            };
+
+        let dimensions = Rc::new(dimensions);
+        Array::sliced_op(
+            vec![&self, other],
+            &op,
+            backward_op,
+            &dimensions,
+            &dimensions,
+            1,
+            0,
+        )
+    }
+
     /// Computes the reciprocal of each value in the array.
     pub fn reciprocal(&self) -> Array {
         let values: Vec<Float> = self.values.iter().map(|x| 1.0 / x).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp =
@@ -37,7 +71,7 @@ impl Array {
 
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
@@ -53,7 +87,7 @@ impl Array {
         let values: Vec<Float> = self.values.iter().map(|x| x.ln()).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
@@ -71,7 +105,7 @@ impl Array {
         let cached = values.clone();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
@@ -107,7 +141,7 @@ impl Array {
             .collect();
         let target_clone = target_dimensions.clone();
 
-        let backward_op: Option<BackwardOp> = if !self.is_tracked {
+        let backward_op: Option<BackwardOp> = if !*self.is_tracked.borrow() {
             None
         } else {
             Some(Rc::new(move |c, _, x| {
@@ -131,7 +165,7 @@ impl Array {
         };
 
         Array::sliced_op(
-            vec![self],
+            vec![&self],
             &op,
             backward_op,
             &self.dimensions,
@@ -147,45 +181,23 @@ impl Array {
     }
 }
 
-impl<'a, 'b> ops::Add<&'b Array> for &'a Array {
+impl ops::Add<&Array> for &Array {
     type Output = Array;
 
     #[inline]
     fn add(self, other: &Array) -> Self::Output {
-        let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
-
-        let self_length = *self.dimensions.last().unwrap();
-        let other_length = *other.dimensions.last().unwrap();
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
-            for (i, output) in output_slice.iter_mut().enumerate() {
-                *output = arrays[0][i % self_length] + arrays[1][i % other_length];
-            }
+        let backward_op: BackwardOp = Rc::new(|_, t, x| {
+            vec![
+                if t[0] { Some(x.clone()) } else { None },
+                if t[1] { Some(x.clone()) } else { None },
+            ]
         });
 
-        let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
-            None
-        } else {
-            Some(Rc::new(move |_, t, x| {
-                vec![
-                    if t[0] { Some(x.clone()) } else { None },
-                    if t[1] { Some(x.clone()) } else { None },
-                ]
-            }))
-        };
-
-        Array::sliced_op(
-            vec![self, other],
-            &op,
-            backward_op,
-            &dimensions,
-            &dimensions,
-            1,
-            0,
-        )
+        self.element_wise_op(other, Float::add, backward_op)
     }
 }
 
-impl<'a, 'b> ops::Sub<&'b Array> for &'a Array {
+impl ops::Sub<&Array> for &Array {
     type Output = Array;
 
     #[inline]
@@ -194,17 +206,17 @@ impl<'a, 'b> ops::Sub<&'b Array> for &'a Array {
     }
 }
 
-impl<'a> ops::Neg for &'a Array {
+impl ops::Neg for &Array {
     type Output = Array;
 
     #[inline]
     fn neg(self) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, -1.0)));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
-            let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(-x)]);
+            let backward_op: BackwardOp = Rc::new(|_, _, x| vec![Some(-x)]);
             result
                 .with_children(vec![self.clone()])
                 .with_backward_op(backward_op)
@@ -221,14 +233,14 @@ impl ops::Mul<&Array> for Float {
     }
 }
 
-impl<'a> ops::Mul<Float> for &'a Array {
+impl ops::Mul<Float> for &Array {
     type Output = Array;
 
     #[inline]
     fn mul(self, other: Float) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, other)));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(x * other)]);
@@ -239,51 +251,39 @@ impl<'a> ops::Mul<Float> for &'a Array {
     }
 }
 
-impl<'a, 'b> ops::Mul<&'b Array> for &'a Array {
+impl ops::Mul<&Array> for &Array {
     type Output = Array;
 
     #[inline]
     fn mul(self, other: &Array) -> Self::Output {
-        let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
-
-        let self_length = *self.dimensions.last().unwrap();
-        let other_length = *other.dimensions.last().unwrap();
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
-            for (i, output) in output_slice.iter_mut().enumerate() {
-                *output = arrays[0][i % self_length] * arrays[1][i % other_length];
-            }
+        let backward_op: BackwardOp = Rc::new(move |c, t, x| {
+            vec![
+                if t[0] { Some(&c[1] * x) } else { None },
+                if t[1] { Some(&c[0] * x) } else { None },
+            ]
         });
 
-        let backward_op: Option<BackwardOp> = if !self.is_tracked && !other.is_tracked {
-            None
-        } else {
-            Some(Rc::new(move |c, t, x| {
-                vec![
-                    if t[0] { Some(&c[1] * x) } else { None },
-                    if t[1] { Some(&c[0] * x) } else { None },
-                ]
-            }))
-        };
-
-        let dimensions = Rc::new(dimensions);
-        Array::sliced_op(
-            vec![self, other],
-            &op,
-            backward_op,
-            &dimensions,
-            &dimensions,
-            1,
-            0,
-        )
+        self.element_wise_op(other, Float::mul, backward_op)
     }
 }
 
-impl<'a, 'b> ops::Div<&'b Array> for &'a Array {
+impl ops::Div<&Array> for &Array {
     type Output = Array;
 
     #[inline]
     fn div(self, other: &Array) -> Self::Output {
-        self * &other.reciprocal()
+        let backward_op: BackwardOp = Rc::new(move |c, t, x| {
+            vec![
+                if t[0] { Some(x / &c[1]) } else { None },
+                if t[1] {
+                    Some(&(&-(&c[0]) / &(c[1].powf(2.0))) * x)
+                } else {
+                    None
+                },
+            ]
+        });
+
+        self.element_wise_op(other, Float::div, backward_op)
     }
 }
 
@@ -326,7 +326,7 @@ mod tests {
         let a = arr![1.0, 2.0, 3.0].tracked();
         let b = arr![7.0, 8.0, 9.0].tracked();
 
-        let mut product = (&(-&a) * &b).tracked();
+        let product = (&(-&a) * &b).tracked();
         assert_eq!(product, arr![-7.0, -16.0, -27.0]);
 
         product.backward(None);
@@ -340,7 +340,7 @@ mod tests {
         let a = arr![1.0].tracked();
         let b = arr![3.0].tracked();
 
-        let mut result = &a - &b;
+        let result = &a - &b;
         assert_eq!(result, arr![-2.0]);
 
         result.backward(None);
@@ -353,7 +353,7 @@ mod tests {
         let a = arr![arr![2.0, 4.0], arr![1.0, 2.0]].tracked();
         let b = arr![arr![2.0, 2.0], arr![2.0, 1.0]].tracked();
 
-        let mut result = &a / &b;
+        let result = &a / &b;
         assert_eq!(result, arr![arr![1.0, 2.0], arr![0.5, 2.0]]);
 
         result.backward(None);
@@ -379,7 +379,7 @@ mod tests {
     fn test_ln_backward() {
         let a = arr![1.0, 2.0].tracked();
 
-        let mut result = a.ln();
+        let result = a.ln();
         result.backward(None);
         assert_relative_eq!(a.gradient().to_owned().unwrap(), arr![1.0, 0.5]);
     }
@@ -394,7 +394,7 @@ mod tests {
         .tracked();
         let b = arr![2.0, 4.0, 6.0].tracked();
 
-        let mut result = &a.exp() * &b;
+        let result = &a.exp() * &b;
         assert_eq!(result, arr![2.0, 8.0, 12.0]);
 
         result.backward(None);
@@ -415,7 +415,7 @@ mod tests {
         );
         assert_eq!(a.sum(2), arr![arr![21.0], arr![42.0]]);
 
-        let mut result = 2.0 * &a.sum(2);
+        let result = 2.0 * &a.sum(2);
         result.backward(None);
 
         let gradient_expect = arr![
@@ -430,7 +430,7 @@ mod tests {
         let a = arr![1.0, 2.0, 3.0].tracked();
         let b = arr![3.0, 2.0, 1.0].tracked();
         let c = a.sum(0).tracked();
-        let mut result = &c * &b;
+        let result = &c * &b;
 
         result.backward(None);
         assert_eq!(a.gradient().to_owned().unwrap(), arr![3.0, 2.0, 1.0]);
@@ -443,7 +443,7 @@ mod tests {
         let b = arr![arr![3.0, 2.0, 1.0], arr![6.0, 5.0, 4.0]].tracked();
         let c = a.powf(2.0).tracked();
 
-        let mut result = &c * &b;
+        let result = &c * &b;
         assert_eq!(result, arr![arr![3.0, 8.0, 9.0], arr![96.0, 125.0, 144.0]]);
 
         result.backward(None);
@@ -465,7 +465,7 @@ mod tests {
     fn test_backward_div_sum() {
         let a = arr![arr![2.0, 4.0, 2.0]].tracked();
 
-        let mut result = &a / &a.sum(1);
+        let result = &a / &a.sum(1);
         assert_eq!(result, arr![arr![0.25, 0.5, 0.25]]);
 
         result.backward(None);
@@ -477,7 +477,7 @@ mod tests {
         let a = arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]].tracked();
         let b = arr![1.0, 2.0, 3.0].tracked();
 
-        let mut result = &a * &b;
+        let result = &a * &b;
         assert_eq!(result, arr![arr![1.0, 4.0, 9.0], arr![3.0, 4.0, 3.0]]);
 
         result.backward(None);

@@ -11,7 +11,7 @@ impl Array {
     pub fn reshape(&self, dimensions: Vec<usize>) -> Array {
         let result = Array::from((dimensions, Rc::clone(&self.values)));
 
-        if !self.is_tracked {
+        if !*self.is_tracked.borrow() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, t, x| {
@@ -41,7 +41,9 @@ impl Array {
                 daxpy_blas(alpha, arrays[0], output_slice);
             });
 
-            let backward_op: Option<BackwardOp> = if !x.is_tracked && !y.is_tracked {
+            let backward_op: Option<BackwardOp> = if !*x.is_tracked.borrow()
+                && !*y.is_tracked.borrow()
+            {
                 None
             } else {
                 Some(Rc::new(move |_, t, x| {
@@ -148,9 +150,12 @@ impl Array {
                 }
             } else {
                 let sum_len = a.dimensions[a.dimensions.len() - a_index];
-                assert!(b.dimensions.len() < b_index || sum_len == b.dimensions[b.dimensions.len() - b_index], 
+                assert!(
+                    b.dimensions.len() < b_index
+                        || sum_len == b.dimensions[b.dimensions.len() - b_index],
                     "error: the dimensions {:?}, and {:?} are not compatible",
-                    a.dimensions, b.dimensions
+                    a.dimensions,
+                    b.dimensions
                 );
 
                 sum_len
@@ -176,7 +181,12 @@ impl Array {
                     || c.dimensions[c.dimensions.len() - 2] == 1
                     || c.dimensions[c.dimensions.len() - 2] == output_rows;
 
-                assert!(is_cols_valid && is_rows_valid, "error: the dimensions {:?} cannot be broadcast to the output dimensions {:?}", c.dimensions, output_dimensions);
+                assert!(
+                    is_cols_valid && is_rows_valid,
+                    "error: the dimensions {:?} cannot be broadcast to the output dimensions {:?}",
+                    c.dimensions,
+                    output_dimensions
+                );
             }
 
             true
@@ -187,7 +197,10 @@ impl Array {
         let op: SlicedOp = Box::new(move |output_slice, arrays| {
             if set_output {
                 let slice_length = output_slice.len();
-                output_slice.iter_mut().zip(arrays[2].iter().cycle().take(slice_length)).for_each(|(o, v)| *o = *v);
+                output_slice
+                    .iter_mut()
+                    .zip(arrays[2].iter().cycle().take(slice_length))
+                    .for_each(|(o, v)| *o = *v);
             }
             #[cfg(feature = "blas")]
             matmul_blas(
@@ -205,25 +218,30 @@ impl Array {
             );
         });
 
-        let backward_op: Option<BackwardOp> = if !a.is_tracked && !b.is_tracked {
+        let backward_op: Option<BackwardOp> = if !*a.is_tracked.borrow() && !*b.is_tracked.borrow()
+        {
             None
         } else {
             Some(Rc::new(move |c, t, x| {
                 vec![
-                    if t[0] { Some(
-                        if a_transpose {
+                    if t[0] {
+                        Some(if a_transpose {
                             Array::matmul((&c[1], b_transpose), (x, true), None)
                         } else {
                             Array::matmul((x, false), (&c[1], !b_transpose), None)
-                        }
-                    )} else { None },
-                    if t[1] { Some(
-                        if b_transpose {
+                        })
+                    } else {
+                        None
+                    },
+                    if t[1] {
+                        Some(if b_transpose {
                             Array::matmul((&x, true), (&c[0], a_transpose), None)
                         } else {
                             Array::matmul((&c[0], !a_transpose), (&x, false), None)
-                        }
-                    )} else { None },
+                        })
+                    } else {
+                        None
+                    },
                     if t[2] { Some(x.clone()) } else { None },
                 ]
             }))
@@ -250,7 +268,7 @@ mod tests {
     #[test]
     fn test_reshape() {
         let a = arr![arr![1.0, 2.0], arr![3.0, 4.0]].tracked();
-        let mut reshaped = a.reshape(vec![1, 4]);
+        let reshaped = a.reshape(vec![1, 4]);
         assert_eq!(reshaped, arr![arr![1.0, 2.0, 3.0, 4.0]]);
 
         reshaped.backward(None);
@@ -264,7 +282,7 @@ mod tests {
     fn test_axpy() {
         let a = arr![arr![1.0, 2.0, 3.0], arr![3.0, 2.0, 1.0]].tracked();
         let b = arr![arr![5.0, 6.0, 7.0], arr![9.0, 8.0, 7.0]].tracked();
-        let mut result = Array::axpy(-2.0, &a, &b);
+        let result = Array::axpy(-2.0, &a, &b);
         assert_eq!(result, arr![arr![3.0, 2.0, 1.0], arr![3.0, 4.0, 5.0]]);
 
         result.backward(None);
@@ -285,7 +303,7 @@ mod tests {
 
         let matmul_expect = arr![arr![12.0, 21.0], arr![36.0, 54.0]];
 
-        let mut result = Array::matmul((&a, false), (&b, false), None);
+        let result = Array::matmul((&a, false), (&b, false), None);
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
@@ -306,7 +324,7 @@ mod tests {
 
         let matmul_expect = arr![arr![12.0, 21.0], arr![36.0, 54.0]];
 
-        let mut result = Array::matmul((&a, true), (&b, false), None);
+        let result = Array::matmul((&a, true), (&b, false), None);
         assert_eq!(result, matmul_expect);
 
         result.backward(None);
@@ -329,7 +347,7 @@ mod tests {
         .tracked();
         let b = arr![arr![1.0, 2.0, 3.0]].tracked();
 
-        let mut result = Array::matmul((&a, false), (&b, true), None);
+        let result = Array::matmul((&a, false), (&b, true), None);
         assert_eq!(
             result,
             arr![arr![arr![14.0], arr![10.0]], arr![arr![32.0], arr![50.0]]]
@@ -354,7 +372,7 @@ mod tests {
         let a = arr![1.0, 2.0].tracked();
         let b = arr![arr![2.0, 4.0]].tracked();
 
-        let mut result = Array::matmul((&a, true), (&b, false), None);
+        let result = Array::matmul((&a, true), (&b, false), None);
         assert_eq!(result, arr![arr![2.0, 4.0], arr![4.0, 8.0]]);
 
         result.backward(None);
@@ -367,7 +385,7 @@ mod tests {
         let w = arr![arr![1.0, 2.0], arr![8.0, 2.0]].tracked();
         let x = arr![5.0, 3.0];
 
-        let mut result = Array::matmul((&x, false), (&w, true), None);
+        let result = Array::matmul((&x, false), (&w, true), None);
         result.backward(None);
         assert_eq!(
             w.gradient().to_owned().unwrap(),
@@ -457,7 +475,7 @@ mod tests {
         let a = arr![arr![1.0, 2.0, 3.0]].tracked();
         let b = arr![arr![9.0, 8.0, 7.0]].tracked();
 
-        let mut result = Array::matmul((&a, false), (&b, true), None);
+        let result = Array::matmul((&a, false), (&b, true), None);
 
         result.backward(None);
         assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![9.0, 8.0, 7.0]]);
@@ -470,7 +488,7 @@ mod tests {
         let b = arr![arr![1.0], arr![2.0], arr![3.0]].tracked();
         let c = arr![arr![7.0], arr![8.0]].tracked();
 
-        let mut result = Array::matmul((&a, false), (&b, false), Some(&c));
+        let result = Array::matmul((&a, false), (&b, false), Some(&c));
         assert_eq!(result, arr![arr![21.0], arr![40.0]]);
 
         result.backward(None);
@@ -491,7 +509,7 @@ mod tests {
         let b = arr![arr![1.0], arr![2.0], arr![3.0]].tracked();
         let c = arr![arr![1.0, 2.0, 3.0]].tracked();
 
-        let mut result = Array::matmul(
+        let result = Array::matmul(
             (&Array::matmul((&a, false), (&b, false), None), false),
             (&c, false),
             None,

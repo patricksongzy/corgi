@@ -45,7 +45,7 @@ mod tests {
     fn test_op() {
         let mul: array::ForwardOp = Rc::new(|x: &[&Array]| {
             Array::from((
-                x[0].dimensions().clone(),
+                x[0].dimensions().to_vec(),
                 x[0].values()
                     .iter()
                     .zip(x[1].values())
@@ -55,34 +55,32 @@ mod tests {
         });
 
         let mul_clone = Rc::clone(&mul);
-        let backward_op: array::BackwardOp = Rc::new(
-            move |children: &mut Vec<Array>, is_tracked: &[bool], delta: &Array| {
-                vec![
-                    if is_tracked[0] {
-                        Some(Array::op(
-                            &vec![&children[1], delta],
-                            Rc::clone(&mul_clone),
-                            None,
-                        ))
-                    } else {
-                        None
-                    },
-                    if is_tracked[1] {
-                        Some(Array::op(
-                            &vec![&children[0], delta],
-                            Rc::clone(&mul_clone),
-                            None,
-                        ))
-                    } else {
-                        None
-                    },
-                ]
-            },
-        );
+        let backward_op: array::BackwardOp = Rc::new(move |children, is_tracked, delta| {
+            vec![
+                if is_tracked[0] {
+                    Some(Array::op(
+                        &vec![&children[1], delta],
+                        Rc::clone(&mul_clone),
+                        None,
+                    ))
+                } else {
+                    None
+                },
+                if is_tracked[1] {
+                    Some(Array::op(
+                        &vec![&children[0], delta],
+                        Rc::clone(&mul_clone),
+                        None,
+                    ))
+                } else {
+                    None
+                },
+            ]
+        });
 
         let a = arr![1.0, 2.0, 3.0].tracked();
         let b = arr![3.0, 2.0, 1.0].tracked();
-        let mut product = Array::op(&vec![&a, &b], mul, Some(backward_op));
+        let product = Array::op(&vec![&a, &b], mul, Some(backward_op));
         assert_eq!(product, arr![3.0, 4.0, 3.0]);
         product.backward(None);
         assert_eq!(product.gradient().to_owned().unwrap(), arr![1.0, 1.0, 1.0]);
