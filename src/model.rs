@@ -64,34 +64,23 @@ impl<'a> Model<'a> {
             .flatten()
             .collect()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layer::conv::Conv;
-    use crate::layer::dense::Dense;
-    use crate::layer::pool::Pool;
-    use crate::optimizer::gd::GradientDescent;
-    use crate::{activation, cost, initializer};
-
-    use rand::Rng;
-
-    fn test_gradient(mut model: Model<'_>, cost: &CostFunction, input: Array, target: Array) {
+    /// Performs a gradient test on the model
+    pub fn test_gradient(&mut self, cost: &CostFunction, input: Array, target: Array) {
         #[cfg(feature = "f32")]
         let epsilon = 0.1;
         #[cfg(not(feature = "f32"))]
         let epsilon = 1e-7;
 
-        model.forward(input.clone());
-        model.backward(target.clone());
+        self.forward(input.clone());
+        self.backward(target.clone());
 
         // due to borrow checking, we need to keep re-borrowing, and dropping the parameters
-        let parameters = model.parameters();
+        let parameters = self.parameters();
         let length = parameters.len();
         std::mem::drop(parameters);
         for i in 0..length {
-            let parameters = model.parameters();
+            let parameters = self.parameters();
             let value_length = parameters[i].values().len();
             let dimensions = parameters[i].dimensions().to_vec();
             let gradient = parameters[i].gradient().to_owned().unwrap().clone();
@@ -105,35 +94,35 @@ mod tests {
                 delta[j] = epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = model.parameters();
+                let mut parameters = self.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_plus = model.forward(input.clone());
+                let result_plus = self.forward(input.clone());
                 let error_plus = (cost)(&result_plus, &target.clone()).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = -2.0 * epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = model.parameters();
+                let mut parameters = self.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
                 parameter.start_tracking();
                 std::mem::drop(parameters);
 
-                let result_minus = model.forward(input.clone());
+                let result_minus = self.forward(input.clone());
                 let error_minus = (cost)(&result_minus, &target).sum_all();
 
                 let mut delta = vec![0.0; value_length];
                 delta[j] = epsilon;
                 let delta = Array::from((dimensions.clone(), delta));
 
-                let mut parameters = model.parameters();
+                let mut parameters = self.parameters();
                 let parameter = &mut parameters[i];
                 parameter.stop_tracking();
                 **parameter = &**parameter + &delta;
@@ -155,6 +144,19 @@ mod tests {
             assert!(norm < epsilon);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layer::conv::Conv;
+    use crate::layer::dense::Dense;
+    use crate::layer::pool::Pool;
+    use crate::layer::reshape::Reshape;
+    use crate::optimizer::gd::GradientDescent;
+    use crate::{activation, cost, initializer};
+
+    use rand::Rng;
 
     #[test]
     fn test_dense_gradient() {
@@ -169,28 +171,28 @@ mod tests {
         let gd = GradientDescent::new(learning_rate);
         let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&sigmoid));
         let mut l2 = Dense::new(hidden_size, output_size, &initializer, Some(&softmax));
-        let model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
+        let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
 
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
-        test_gradient(model, &cross_entropy, arr![x, y], arr![z, w]);
+        model.test_gradient(&cross_entropy, arr![x, y], arr![z, w]);
     }
 
     #[test]
     fn test_conv_gradient() {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
 
         let learning_rate = 0.0;
 
         let (image_depth, image_rows, image_cols) = (3, 9, 9);
         let image_dimensions = vec![image_depth, image_rows, image_cols];
-        let output_dimensions = vec![1, 1, 1];
+        let output_dimensions = vec![5];
         let input_size = image_dimensions.iter().product();
         let output_size = output_dimensions.iter().product();
 
         let initializer = initializer::he();
-        let activation = activation::relu();
-        let mse = cost::mse();
+        let relu = activation::relu();
+        let softmax = activation::softmax();
+        let mse = cost::cross_entropy();
         let gd = GradientDescent::new(learning_rate);
 
         // 3x9x9 -> 16x4x4
@@ -198,13 +200,15 @@ mod tests {
             (16, image_depth, 3, 3),
             (2, 2),
             &initializer,
-            Some(&activation),
+            Some(&relu),
         );
         // 16x4x4 -> 16x2x2
         let mut l2 = Pool::new((2, 2), (2, 2));
-        // 16x2x2 -> 1x1x1
-        let mut l3 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
-        let model = Model::new(vec![&mut l1, &mut l2, &mut l3], &gd, &mse);
+        // 16x2x2 -> 8x1x1
+        let mut l3 = Conv::new((8, 16, 2, 2), (2, 2), &initializer, None);
+        let mut l4 = Reshape::new(vec![8]);
+        let mut l5 = Dense::new(8, 5, &initializer, Some(&softmax));
+        let mut model = Model::new(vec![&mut l1, &mut l2, &mut l3, &mut l4, &mut l5], &gd, &mse);
 
         let input = Array::from((
             image_dimensions,
@@ -220,7 +224,7 @@ mod tests {
                 .collect::<Vec<Float>>(),
         ));
 
-        test_gradient(model, &mse, input, target);
+        model.test_gradient(&mse, input, target);
     }
 
     #[test]

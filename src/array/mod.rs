@@ -514,14 +514,17 @@ impl Array {
         );
 
         // count of leading dimensions
-        let leading_count = input_dimensions.len().saturating_sub(op_dimension_count);
-        let output_leading_count = output_dimensions.len().saturating_sub(op_dimension_count);
+        let input_dimensions_count = input_dimensions.len();
+        let output_dimensions_count = output_dimensions.len();
 
+        // count of leading dimensions
+        let leading_count = input_dimensions_count.saturating_sub(op_dimension_count);
         let unbroadcasted_group_length: usize = input_dimensions
             .iter()
             .rev()
             .take(op_dimension_count)
             .product();
+
         let mut slices: Vec<&[Float]> = Vec::with_capacity(arrays.len());
         let mut broadcasted_slices: Vec<(&Array, usize, *mut &[Float])> = Vec::new();
         let mut unbroadcasted_slices: Vec<(&Array, *mut &[Float])> = Vec::new();
@@ -561,7 +564,7 @@ impl Array {
                 .skip(op_dimension_count)
                 .product();
 
-            let mut indices = vec![0; cmp::max(input_dimensions.len(), output_dimensions.len())];
+            let mut indices = vec![0; cmp::max(input_dimensions_count, output_dimensions_count)];
             let mut flat_unbroadcasted_index = 0;
             let mut flat_broadcasted_indices = vec![0; broadcasted_slices.len()];
             let mut output_offset = 0;
@@ -571,31 +574,35 @@ impl Array {
                 for (i, (x, d)) in indices
                     .iter_mut()
                     .zip(input_dimensions)
-                    .enumerate()
                     .rev()
+                    .enumerate()
                     .skip(op_dimension_count)
                 {
+                    // do not increment the index if we have broadcasted by extending the array's dimensions (if the current dimension is greater than the array's dimensions)
+                    // or if the dimension is broadcasted from 1
+                    for (index, &(array, group_length, slice)) in
+                        flat_broadcasted_indices.iter_mut().zip(&broadcasted_slices)
+                    {
+                        let dimensions_count = array.dimensions.len();
+                        let dimensions_index = dimensions_count.saturating_sub(i + 1);
+                        if dimensions_index < dimensions_count.saturating_sub(op_dimension_count)
+                            && array.dimensions[dimensions_index] != 1
+                                && (*index + group_length >= array.values.len() || *x != *d - 1)
+                        {
+                            *index = (*index + group_length) % array.values.len();
+                            unsafe {
+                                // we may use unsafe code, since we are just modifying slices
+                                *slice = &array.values[*index..*index + group_length];
+                            }
+                        }
+                    }
+
                     // increment the first dimension that is not about to overflow
                     if *x == *d - 1 {
                         *x = 0;
                     } else {
-                        // do not increment the index if we have broadcasted by extending the array's dimensions (if the current dimension is greater than the array's dimensions)
-                        // or if the dimension is broadcasted from 1
-                        for (index, &(array, group_length, slice)) in
-                            flat_broadcasted_indices.iter_mut().zip(&broadcasted_slices)
-                        {
-                            if i < array.dimensions.len().saturating_sub(op_dimension_count)
-                                && array.dimensions[i] != 1
-                            {
-                                *index += group_length;
-                                unsafe {
-                                    // we may use unsafe code, since we are just modifying slices
-                                    *slice = &array.values[*index..*index + group_length];
-                                }
-                            }
-                        }
-
-                        if i < leading_count && input_dimensions[i] != 1 {
+                        let input_dimensions_index = input_dimensions_count - i - 1;
+                        if input_dimensions_index < leading_count && input_dimensions[input_dimensions_index] != 1 {
                             flat_unbroadcasted_index += unbroadcasted_group_length;
                             for &(array, slice) in &unbroadcasted_slices {
                                 unsafe {
@@ -606,9 +613,11 @@ impl Array {
                             }
                         }
 
-                        if i < output_leading_count && output_dimensions[i] != 1
+                        let output_dimensions_index = output_dimensions_count.saturating_sub(i + 1);
+                        if output_dimensions_index < output_dimensions_count.saturating_sub(op_dimension_count)
+                            && output_dimensions[output_dimensions_index] != 1
                         {
-                            output_offset += output_group_length;
+                            output_offset = (output_offset + output_group_length) % output_length;
                             output_slice = &mut output_values
                                 [output_offset..output_offset + output_group_length];
                         }
@@ -623,11 +632,11 @@ impl Array {
         let mut output_dimensions = output_dimensions.to_vec();
         if flatten_count > 0 {
             let flattened_dimensions = output_dimensions
-                [output_dimensions.len() - flatten_count..output_dimensions.len()]
+                [output_dimensions_count - flatten_count..output_dimensions_count]
                 .iter()
                 .product();
 
-            let flattened_length = output_dimensions.len() - flatten_count + 1;
+            let flattened_length = output_dimensions_count - flatten_count + 1;
             output_dimensions.truncate(flattened_length);
             output_dimensions[flattened_length - 1] = flattened_dimensions;
         }
@@ -961,6 +970,23 @@ mod tests {
         });
 
         Array::sliced_op(vec![&a], &mut op, None, &[2], &[1], 0, 0);
+    }
+
+    #[test]
+    fn test_broadcast_twice() {
+        // 2x2x2x2
+        let a = arr![
+            arr![arr![arr![3.0, 2.0], arr![5.0, 8.0]], arr![arr![2.0, 5.0], arr![7.0, 4.0]]],
+            arr![arr![arr![6.0, 8.0], arr![2.0, 3.0]], arr![arr![1.0, 2.0], arr![3.0, 8.0]]]
+        ];
+        // 1x2x1
+        let b = arr![arr![arr![1.0], arr![2.0]]];
+
+        let result = &a + &b;
+        assert_eq!(result, arr![
+            arr![arr![arr![4.0, 3.0], arr![7.0, 10.0]], arr![arr![3.0, 6.0], arr![9.0, 6.0]]],
+            arr![arr![arr![7.0, 9.0], arr![4.0, 5.0]], arr![arr![2.0, 3.0], arr![5.0, 10.0]]]
+        ]);
     }
 
     #[test]
