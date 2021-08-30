@@ -548,8 +548,6 @@ impl Array {
         // total length of the output
         let output_length = output_dimensions.iter().product();
         let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
-
-        let mut indices = vec![0; cmp::max(input_dimensions.len(), output_dimensions.len())];
         let mut output_values = vec![0.0; output_length];
         let mut output_slice = &mut output_values[0..output_group_length];
 
