@@ -66,7 +66,7 @@ impl Array {
             0,
         );
 
-        if !*image.is_tracked.borrow() {
+        if !image.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
@@ -159,7 +159,7 @@ impl Array {
             0,
         );
 
-        if !*unrolled.is_tracked.borrow() {
+        if !unrolled.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
@@ -206,7 +206,7 @@ impl Array {
 
         let result = Array::from((output_dimensions, result));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
