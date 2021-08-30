@@ -16,10 +16,50 @@
 </p>
 <hr>
 
+```rust
+for _ in 0..iterations {
+    // array operations are never in-place for corgi, so values never change
+    let input = Array::from((vec![batch_size, input_size], vec![...]));
+    let target = Array::from((vec![batch_size, output_size], vec![...]));
+
+    let _result = model.forward(input);
+    let loss = model.backward(target);
+    // update the parameters, and clear gradients (backward pass only sets gradients)
+    model.update();
+
+    println!("loss: {}", loss);
+}
+```
+
+## Design
+* Array operations are never in-place, meaning array values are never modified.
+* Eager execution.
+* Dynamic-as-possible computational graph.
+```rust
+for _ in 0..10 {
+    c = &c + &(&a * &b);
+    if c[0] > 50.0 {
+        c = &c * &a;
+    }
+}
+
+c.backward(None);
+```
+* The Array is responsible differentiates operations done on it for the backward pass.
+* No graph structure for ergonomics - an `Array` contains only its children.
+* Arrays do note store consumers (at the moment). They store consumer counts instead.
+
+## BLAS
+* The `openblas`, or `netlib` features can be enabled.
+* Versions prior to 0.9.7 of Corgi did not prioritise optimisation, and will be slow.
+
+### Tracked Arrays
+* Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
+* Tracked arrays are arrays which require gradients to be computed, and stored.
+* For more information, see the documentation for `tracked()`, and `untracked()` in `array.rs`.
+
 ## Examples
-* For fully-connected examples, remember to call `model.update()`.
-* Fully-connected [MNIST](https://github.com/patricksongzy/corgi-sample/blob/main/src/main.rs) (convolutional neural networks are in-progress).
-* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L65)):
+* Fully-connected neural network ([full version](https://github.com/patricksongzy/corgi/blob/main/src/model.rs#L221)):
 ```rust
 let initializer = initializer::he();
 let relu = activation::relu();
@@ -70,36 +110,14 @@ assert_eq!(a.gradient(), arr![232420.0]);
 ```
 * [Custom operation](https://github.com/patricksongzy/corgi/blob/main/src/lib.rs#L34) (still needs some work).
 
-## Important Design Notes
-* Array values should never be modified from operations; instead, new arrays should be created.
-* Arrays are untracked by default, so if gradients are required, `tracked()`, or `start_tracking()` must be used (see the documentation for details).
-* Versions prior to 0.9.7 of Corgi did not prioritise optimisation, and will be slow.
-
-
-## Design
-* Eager execution.
-* Dynamic-as-possible computational graph.
-* Originally worked around the ergonomics of the `arr!` macro (which however, currently still needs more work).
-* Did not want to have to manage any 'graph' structures when using Corgi (the Arrays should represent the graph alone).
-* Graphs do note store consumers (at the moment). They store consumer counts instead.
-
-## BLAS
-* The `opeblas`, or `netlib` features can be enabled, and requires CBLAS if used.
-
-### Tracked Arrays
-* Tracked arrays are arrays which require gradients to be computed, and stored.
-* For more information, see the documentation for `tracked()`, and `untracked()` in `array.rs`.
-
-## Name
-* Original name was going to be 'cog-(something)', since Rust's logo is a cog, and since cognition (get it?).
-But, many AI libraries are named 'cog-(something)'. Attempts at permutations of 'cog' with other words sounded awkward, such as 'cogi', for 'cog-intelligence', so the name Corgi was chosen.
-
 ## Resources
 * Shields are from [shields.io](https://shields.io).
 * MIT 6.034 on OpenCourseWare for a primer on Backward Propagation.
 * CS231n YouTube recordings for a primer on Convolutional Neural Networks.
 
 A lot of the library was built around being as dynamic as possible, meaning if chosen well, some design choices might be similar to other dynamic computational graph libraries.
+
+Third-party libraries were used, and can be found in `Cargo.toml`.
 
 ## Licence
 * MIT

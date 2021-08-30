@@ -25,12 +25,11 @@ impl Array {
             }
         });
 
-        let backward_op: Option<BackwardOp> =
-            if !*self.is_tracked.borrow() && !*other.is_tracked.borrow() {
-                None
-            } else {
-                Some(backward_op)
-            };
+        let backward_op: Option<BackwardOp> = if !self.is_tracked.get() && !other.is_tracked.get() {
+            None
+        } else {
+            Some(backward_op)
+        };
 
         let dimensions = Rc::new(dimensions);
         Array::sliced_op(
@@ -49,7 +48,7 @@ impl Array {
         let values: Vec<Float> = self.values.iter().map(|x| 1.0 / x).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp =
@@ -71,7 +70,7 @@ impl Array {
 
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
@@ -87,7 +86,7 @@ impl Array {
         let values: Vec<Float> = self.values.iter().map(|x| x.ln()).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
@@ -105,7 +104,7 @@ impl Array {
         let cached = values.clone();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
@@ -121,9 +120,9 @@ impl Array {
         }
     }
 
-    /// Sums along the last `skip_count` dimensions.
-    pub fn sum(&self, skip_count: usize) -> Array {
-        if skip_count == 0 {
+    /// Sums along the last `dimension_count` dimensions.
+    pub fn sum(&self, dimension_count: usize) -> Array {
+        if dimension_count == 0 {
             return self.clone();
         }
 
@@ -131,17 +130,17 @@ impl Array {
             output_slice[0] = arrays[0].iter().sum();
         });
 
-        let leading_count = self.dimensions.len().saturating_sub(skip_count);
+        let leading_count = self.dimensions.len().saturating_sub(dimension_count);
         let target_dimensions: Vec<usize> = self
             .dimensions
             .iter()
             .copied()
             .take(leading_count)
-            .chain(vec![1; skip_count])
+            .chain(vec![1; dimension_count])
             .collect();
         let target_clone = target_dimensions.clone();
 
-        let backward_op: Option<BackwardOp> = if !*self.is_tracked.borrow() {
+        let backward_op: Option<BackwardOp> = if !self.is_tracked.get() {
             None
         } else {
             Some(Rc::new(move |c, _, x| {
@@ -158,7 +157,7 @@ impl Array {
                     None,
                     &target_clone,
                     &c[0].dimensions,
-                    skip_count,
+                    dimension_count,
                     0,
                 ))]
             }))
@@ -170,8 +169,8 @@ impl Array {
             backward_op,
             &self.dimensions,
             &target_dimensions,
-            skip_count,
-            skip_count,
+            dimension_count,
+            dimension_count,
         )
     }
 
@@ -213,7 +212,7 @@ impl ops::Neg for &Array {
     fn neg(self) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, -1.0)));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|_, _, x| vec![Some(-x)]);
@@ -240,7 +239,7 @@ impl ops::Mul<Float> for &Array {
     fn mul(self, other: Float) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, other)));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(x * other)]);

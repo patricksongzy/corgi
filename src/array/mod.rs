@@ -35,13 +35,14 @@ use crate::numbers::*;
 
 use approx::{AbsDiffEq, RelativeEq};
 
+use std::cmp;
 use std::convert::{From, Into};
 use std::fmt;
 
 use std::ops;
 use std::ops::Index;
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 /// The sliced operation computes an operation with respect to slices on a mutable output slice.
@@ -72,11 +73,11 @@ pub struct Array {
     dimensions: Vec<usize>,
     values: Rc<Vec<Float>>,
     children: Rc<Vec<Array>>,
-    consumer_count: Rc<RefCell<usize>>,
     backward_op: Option<BackwardOp>,
-    is_tracked: RefCell<bool>,
-    keep_gradient: RefCell<bool>,
-    delta: Rc<RefCell<Option<Array>>>,
+    is_tracked: Cell<bool>,
+    keep_gradient: Cell<bool>,
+    consumer_count: Rc<Cell<usize>>,
+    delta: Rc<Cell<Option<Array>>>,
     gradient: Rc<RefCell<Option<Array>>>,
 }
 
@@ -113,11 +114,11 @@ impl From<Vec<Array>> for Array {
         dimensions.extend(&contents.first().unwrap().dimensions);
 
         // take ownership if possible, but clone otherwise
-        let values = contents
+        let values: Vec<Float> = contents
             .into_iter()
             .map(|array| Rc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .flatten()
-            .collect::<Vec<Float>>();
+            .collect();
 
         Array::from((dimensions, values))
     }
@@ -201,11 +202,11 @@ impl From<(Vec<usize>, Rc<Vec<Float>>)> for Array {
             dimensions,
             values,
             children: Rc::new(Vec::new()),
-            consumer_count: Rc::new(RefCell::new(0)),
             backward_op: None,
-            is_tracked: RefCell::new(false),
-            keep_gradient: RefCell::new(false),
-            delta: Rc::new(RefCell::new(None)),
+            is_tracked: Cell::new(false),
+            keep_gradient: Cell::new(false),
+            consumer_count: Rc::new(Cell::new(0)),
+            delta: Rc::new(Cell::new(None)),
             gradient: Rc::new(RefCell::new(None)),
         }
     }
@@ -270,7 +271,7 @@ fn element_wise_dimensions(x: &[usize], y: &[usize]) -> Vec<usize> {
             y
         );
 
-        *l = std::cmp::max(*l, *o);
+        *l = cmp::max(*l, *o);
     }
 
     longer
@@ -388,11 +389,11 @@ impl Array {
     /// Propagates the number of consumers to each array in the graph.
     fn propagate_consumers(&self) {
         for child in self.children.iter() {
-            if *child.is_tracked.borrow() {
-                let mut consumer_count = child.consumer_count.borrow_mut();
-                *consumer_count += 1;
+            if child.is_tracked.get() {
+                let child_consumer_count = child.consumer_count.get();
+                child.consumer_count.set(child_consumer_count + 1);
                 // don't double-count consumers
-                if *consumer_count == 1 {
+                if child_consumer_count == 0 {
                     child.propagate_consumers();
                 }
             }
@@ -406,8 +407,9 @@ impl Array {
     /// Panics if the current node has children, but is not a differentiable function (is not a leaf).
     pub fn backward(&self, delta: Option<Array>) {
         let mut delta = {
-            let mut delta_cache = self.delta.borrow_mut();
-            if delta_cache.is_none() {
+            if let Some(x) = self.delta.take() {
+                x
+            } else {
                 self.propagate_consumers();
                 match delta {
                     Some(x) => x,
@@ -416,8 +418,6 @@ impl Array {
                         Rc::new(vec![1.0; self.values.len()]),
                     )),
                 }
-            } else {
-                std::mem::replace(&mut *delta_cache, None).unwrap()
             }
         };
 
@@ -440,18 +440,15 @@ impl Array {
                     if let Some(delta) = delta {
                         let child = &self.children[i];
                         {
-                            let mut child_delta_cache = child.delta.borrow_mut();
-                            match child_delta_cache.as_ref() {
-                                Some(x) => *child_delta_cache = Some(x + &delta),
-                                None => {
-                                    *child_delta_cache = Some(delta.flatten_to(&child.dimensions))
-                                }
+                            match child.delta.take() {
+                                Some(x) => child.delta.set(Some(&x + &delta)),
+                                None => child.delta.set(Some(delta.flatten_to(&child.dimensions))),
                             }
-
-                            *child.consumer_count.borrow_mut() -= 1;
                         }
 
-                        if *child.consumer_count.borrow() == 0 {
+                        let child_consumer_count = child.consumer_count.get();
+                        child.consumer_count.set(child_consumer_count - 1);
+                        if child_consumer_count == 1 {
                             child.backward(None);
                         }
                     }
@@ -465,7 +462,7 @@ impl Array {
             }
         }
 
-        if self.children.is_empty() || *self.keep_gradient.borrow() {
+        if self.children.is_empty() || self.keep_gradient.get() {
             let mut gradient = self.gradient.borrow_mut();
             match &mut *gradient {
                 Some(x) => *gradient = Some(&*x + &delta),
@@ -478,7 +475,7 @@ impl Array {
     /// This is useful for broadcasting arrays to compatible dimensions.
     ///
     /// Takes in a vector of arrays, slicing them to meet `input_dimensions`, while skipping the
-    /// last `skip_size` dimensions, and performing the operation on the slices, which must have
+    /// last `op_dimension_count` dimensions, and performing the operation on the slices, which must have
     /// length of the product of the skipped dimensions.
     ///
     /// # Arguments
@@ -502,67 +499,73 @@ impl Array {
         op_dimension_count: usize,
         flatten_count: usize,
     ) -> Array {
-        let is_dimensions_valid = {
-            arrays.iter().all(|v| {
-                v.dimensions
-                    .iter()
-                    .rev()
-                    .skip(op_dimension_count)
-                    .zip(input_dimensions.iter().rev().skip(op_dimension_count))
-                    .all(|(x, y)| *x == 1 || *x == *y)
-            })
-        };
+        let is_dimensions_valid = arrays.iter().all(|v| {
+            v.dimensions
+                .iter()
+                .rev()
+                .skip(op_dimension_count)
+                .zip(input_dimensions.iter().rev().skip(op_dimension_count))
+                .all(|(x, y)| *x == 1 || *x == *y)
+        });
 
         assert!(
             is_dimensions_valid,
             "error: unable to broadcast arrays to target dimensions"
         );
 
-        // total length of the leading values
-        let leading_length = input_dimensions
-            .iter()
-            .rev()
-            .skip(op_dimension_count)
-            .product();
-        // total length of the output
-        let output_length = output_dimensions.iter().product();
-
         // count of leading dimensions
         let leading_count = input_dimensions.len().saturating_sub(op_dimension_count);
-        // total length of the slices
-        let group_lengths: Vec<usize> = arrays
+        let output_leading_count = output_dimensions.len().saturating_sub(op_dimension_count);
+
+        let unbroadcasted_group_length: usize = input_dimensions
             .iter()
-            .map(|v| v.dimensions.iter().rev().take(op_dimension_count).product())
-            .collect();
+            .rev()
+            .take(op_dimension_count)
+            .product();
+        let mut slices: Vec<&[Float]> = Vec::with_capacity(arrays.len());
+        let mut broadcasted_slices: Vec<(&Array, usize, *mut &[Float])> = Vec::new();
+        let mut unbroadcasted_slices: Vec<(&Array, *mut &[Float])> = Vec::new();
+        for array in &arrays {
+            let index = slices.len();
+            // total length of the slices
+            if array.dimensions == input_dimensions {
+                let slice = &array.values[0..unbroadcasted_group_length];
+                slices.push(slice);
+                unbroadcasted_slices.push((array, &mut slices[index]));
+            } else {
+                let group_length = array
+                    .dimensions
+                    .iter()
+                    .rev()
+                    .take(op_dimension_count)
+                    .product();
+                let slice = &array.values[0..group_length];
+                slices.push(slice);
+                broadcasted_slices.push((array, group_length, &mut slices[index]));
+            }
+        }
+
+        // total length of the output
+        let output_length = output_dimensions.iter().product();
         let output_group_length: usize = output_dimensions.iter().skip(leading_count).product();
-
-        let mut indices = vec![0; std::cmp::max(input_dimensions.len(), output_dimensions.len())];
         let mut output_values = vec![0.0; output_length];
+        let mut output_slice = &mut output_values[0..output_group_length];
+
         if leading_count == 0 {
-            let slices: Vec<&[Float]> = arrays
-                .iter()
-                .enumerate()
-                .map(|(n, v)| &v.values[0..group_lengths[n]])
-                .collect();
-
-            let output_slice = &mut output_values[0..output_group_length];
             op(output_slice, &slices);
-        // TODO
-        // else if all dimensions match
-        // else (broadcast)
         } else {
-            let mut flat_indices = vec![0; arrays.len()];
-            let mut slices: Vec<&[Float]> = arrays
+            // total length of the leading values
+            let leading_length = input_dimensions
                 .iter()
-                .zip(&group_lengths)
-                .map(|(v, &g)| &v.values[0..g])
-                .collect();
+                .rev()
+                .skip(op_dimension_count)
+                .product();
 
+            let mut indices = vec![0; cmp::max(input_dimensions.len(), output_dimensions.len())];
+            let mut flat_unbroadcasted_index = 0;
+            let mut flat_broadcasted_indices = vec![0; broadcasted_slices.len()];
+            let mut output_offset = 0;
             for _ in 0..leading_length {
-                let output_offset = flatten_indices(&indices, &output_dimensions);
-                let output_slice =
-                    &mut output_values[output_offset..output_offset + output_group_length];
-
                 op(output_slice, &slices);
 
                 for (i, (x, d)) in indices
@@ -572,21 +575,42 @@ impl Array {
                     .rev()
                     .skip(op_dimension_count)
                 {
+                    // increment the first dimension that is not about to overflow
                     if *x == *d - 1 {
                         *x = 0;
                     } else {
-                        for (((index, slice), array), group_length) in flat_indices
-                            .iter_mut()
-                            .zip(slices.iter_mut())
-                            .zip(&arrays)
-                            .zip(&group_lengths)
+                        // do not increment the index if we have broadcasted by extending the array's dimensions (if the current dimension is greater than the array's dimensions)
+                        // or if the dimension is broadcasted from 1
+                        for (index, &(array, group_length, slice)) in
+                            flat_broadcasted_indices.iter_mut().zip(&broadcasted_slices)
                         {
                             if i < array.dimensions.len().saturating_sub(op_dimension_count)
                                 && array.dimensions[i] != 1
                             {
                                 *index += group_length;
-                                *slice = &array.values[*index..*index + group_length];
+                                unsafe {
+                                    // we may use unsafe code, since we are just modifying slices
+                                    *slice = &array.values[*index..*index + group_length];
+                                }
                             }
+                        }
+
+                        if i < leading_count && input_dimensions[i] != 1 {
+                            flat_unbroadcasted_index += unbroadcasted_group_length;
+                            for &(array, slice) in &unbroadcasted_slices {
+                                unsafe {
+                                    // we may use unsafe code, since we are just modifying slices
+                                    *slice = &array.values[flat_unbroadcasted_index
+                                        ..flat_unbroadcasted_index + unbroadcasted_group_length];
+                                }
+                            }
+                        }
+
+                        if i < output_leading_count && output_dimensions[i] != 1
+                        {
+                            output_offset += output_group_length;
+                            output_slice = &mut output_values
+                                [output_offset..output_offset + output_group_length];
                         }
 
                         *x += 1;
@@ -623,13 +647,24 @@ impl Array {
         if self.dimensions == dimensions {
             self
         } else {
+            let flatten_dimension_count = self.dimensions.len().saturating_sub(dimensions.len());
+
             let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                let stride = output_slice.len();
                 for (i, output) in output_slice.iter_mut().enumerate() {
-                    *output += arrays[0][i];
+                    *output += arrays[0].iter().skip(i).step_by(stride).sum::<Float>();
                 }
             });
 
-            Array::sliced_op(vec![&self], &op, None, &self.dimensions, &*dimensions, 0, 0)
+            Array::sliced_op(
+                vec![&self],
+                &op,
+                None,
+                &self.dimensions,
+                &*dimensions,
+                flatten_dimension_count + 1,
+                0,
+            )
         }
     }
 
@@ -705,10 +740,10 @@ impl Clone for Array {
             dimensions: self.dimensions.clone(),
             values: Rc::clone(&self.values),
             children: Rc::clone(&self.children),
-            consumer_count: Rc::clone(&self.consumer_count),
             backward_op,
-            is_tracked: RefCell::new(*self.is_tracked.borrow()),
-            keep_gradient: RefCell::new(*self.keep_gradient.borrow()),
+            is_tracked: Cell::new(self.is_tracked.get()),
+            keep_gradient: Cell::new(self.keep_gradient.get()),
+            consumer_count: Rc::clone(&self.consumer_count),
             delta: Rc::clone(&self.delta),
             gradient: Rc::clone(&self.gradient),
         }
@@ -893,9 +928,9 @@ mod tests {
         let sum = &product + &a;
 
         sum.propagate_consumers();
-        assert_eq!(*product.consumer_count.borrow(), 1);
-        assert_eq!(*b.consumer_count.borrow(), 1);
-        assert_eq!(*a.consumer_count.borrow(), 2);
+        assert_eq!(product.consumer_count.get(), 1);
+        assert_eq!(b.consumer_count.get(), 1);
+        assert_eq!(a.consumer_count.get(), 2);
     }
 
     #[test]
@@ -905,15 +940,43 @@ mod tests {
 
         b = &b * &a;
         b.propagate_consumers();
-        assert!(*a.is_tracked.borrow());
-        assert!(*b.is_tracked.borrow());
-        assert_eq!(*a.consumer_count.borrow(), 1);
+        assert!(a.is_tracked.get());
+        assert!(b.is_tracked.get());
+        assert_eq!(a.consumer_count.get(), 1);
 
-        *a.consumer_count.borrow_mut() = 0;
+        a.consumer_count.set(0);
 
         b = &b * &a;
         b.propagate_consumers();
-        assert_eq!(*a.consumer_count.borrow(), 2);
+        assert_eq!(a.consumer_count.get(), 2);
+    }
+
+    // TODO should this panic?
+    #[test]
+    #[should_panic]
+    fn test_sliced_op() {
+        let a = arr![1.0];
+        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+            output_slice[0] = arrays[0][0] + arrays[0][1];
+        });
+
+        Array::sliced_op(vec![&a], &op, None, &[2], &[1], 0, 0);
+    }
+
+    #[test]
+    fn test_flatten_to() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]];
+        // TODO error checking
+        let result = a.flatten_to(&[3]);
+
+        assert_eq!(result, arr![5.0, 7.0, 9.0]);
+
+        let b = arr![
+            arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]],
+            arr![arr![7.0, 8.0, 9.0], arr![10.0, 11.0, 12.0]]
+        ];
+        let result = b.flatten_to(&[3]);
+        assert_eq!(result, arr![22.0, 26.0, 30.0]);
     }
 
     #[test]
@@ -937,9 +1000,9 @@ mod tests {
             vec![arr![2.0], arr![5.0]]
         );
 
-        assert!(*a.is_tracked.borrow());
-        assert!(*b.is_tracked.borrow());
-        assert!(*product.is_tracked.borrow());
+        assert!(a.is_tracked.get());
+        assert!(b.is_tracked.get());
+        assert!(product.is_tracked.get());
     }
 
     #[test]
@@ -1060,6 +1123,19 @@ mod tests {
         assert_eq!(c.gradient().to_owned().unwrap(), arr![1.0, 2.0]);
         assert_eq!(b.gradient().to_owned().unwrap(), arr![11.0, 28.0]);
         assert_eq!(a.gradient().to_owned().unwrap(), arr![60.0, 48.0]);
+    }
+
+    #[test]
+    fn test_backward_drop() {
+        let a = arr![6.0].tracked();
+        let b = arr![7.0].tracked();
+        let c = arr![8.0].tracked();
+        let _d = arr![9.0].tracked();
+        let e = &(&a + &b) * &c;
+        std::mem::drop(a);
+        let p = &e * &b;
+        p.backward(None);
+        assert_eq!(b.gradient().to_owned().unwrap(), arr![160.0]);
     }
 
     #[test]

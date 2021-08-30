@@ -11,7 +11,7 @@ impl Array {
             .collect();
 
         let result = Array::from((self.dimensions.clone(), values));
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, _, x| {
@@ -42,7 +42,7 @@ impl Array {
         let cached = Rc::clone(&values);
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
