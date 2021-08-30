@@ -25,12 +25,11 @@ impl Array {
             }
         });
 
-        let backward_op: Option<BackwardOp> =
-            if !*self.is_tracked.borrow() && !*other.is_tracked.borrow() {
-                None
-            } else {
-                Some(backward_op)
-            };
+        let backward_op: Option<BackwardOp> = if !self.is_tracked.get() && !other.is_tracked.get() {
+            None
+        } else {
+            Some(backward_op)
+        };
 
         let dimensions = Rc::new(dimensions);
         Array::sliced_op(
@@ -49,7 +48,7 @@ impl Array {
         let values: Vec<Float> = self.values.iter().map(|x| 1.0 / x).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp =
@@ -71,7 +70,7 @@ impl Array {
 
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| vec![Some(&(&c[0] * 2.0) * x)]);
@@ -87,7 +86,7 @@ impl Array {
         let values: Vec<Float> = self.values.iter().map(|x| x.ln()).collect();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, _, x| vec![Some(x * &c[0].reciprocal())]);
@@ -105,7 +104,7 @@ impl Array {
         let cached = values.clone();
         let result = Array::from((self.dimensions.clone(), values));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |c, _, x| {
@@ -141,7 +140,7 @@ impl Array {
             .collect();
         let target_clone = target_dimensions.clone();
 
-        let backward_op: Option<BackwardOp> = if !*self.is_tracked.borrow() {
+        let backward_op: Option<BackwardOp> = if !self.is_tracked.get() {
             None
         } else {
             Some(Rc::new(move |c, _, x| {
@@ -213,7 +212,7 @@ impl ops::Neg for &Array {
     fn neg(self) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, -1.0)));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|_, _, x| vec![Some(-x)]);
@@ -240,7 +239,7 @@ impl ops::Mul<Float> for &Array {
     fn mul(self, other: Float) -> Self::Output {
         let result = Array::from((self.dimensions.clone(), scale_values(&self.values, other)));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(move |_, _, x| vec![Some(x * other)]);

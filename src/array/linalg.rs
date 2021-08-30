@@ -11,7 +11,7 @@ impl Array {
     pub fn reshape(&self, dimensions: Vec<usize>) -> Array {
         let result = Array::from((dimensions, Rc::clone(&self.values)));
 
-        if !*self.is_tracked.borrow() {
+        if !self.is_tracked.get() {
             result
         } else {
             let backward_op: BackwardOp = Rc::new(|c, t, x| {
@@ -41,9 +41,7 @@ impl Array {
                 daxpy_blas(alpha, arrays[0], output_slice);
             });
 
-            let backward_op: Option<BackwardOp> = if !*x.is_tracked.borrow()
-                && !*y.is_tracked.borrow()
-            {
+            let backward_op: Option<BackwardOp> = if !x.is_tracked.get() && !y.is_tracked.get() {
                 None
             } else {
                 Some(Rc::new(move |_, t, x| {
@@ -218,8 +216,7 @@ impl Array {
             );
         });
 
-        let backward_op: Option<BackwardOp> = if !*a.is_tracked.borrow() && !*b.is_tracked.borrow()
-        {
+        let backward_op: Option<BackwardOp> = if !a.is_tracked.get() && !b.is_tracked.get() {
             None
         } else {
             Some(Rc::new(move |c, t, x| {
