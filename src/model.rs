@@ -194,10 +194,10 @@ mod tests {
         let mut l1 = Conv::new(
             (16, image_depth, 3, 3),
             (2, 2),
-            initializer.clone(),
+            &initializer,
             Some(activation),
         );
-        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
+        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
         let model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
 
         let input = Array::from((

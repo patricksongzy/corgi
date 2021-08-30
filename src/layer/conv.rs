@@ -20,7 +20,7 @@ impl Conv {
     pub fn new(
         filter_dimensions: (usize, usize, usize, usize),
         stride_dimensions: (usize, usize),
-        initializer: Initializer,
+        initializer: &Initializer,
         activation: Option<Activation>,
     ) -> Conv {
         let (filter_count, image_depth, filter_rows, filter_cols) = filter_dimensions;
@@ -87,10 +87,10 @@ mod tests {
         let mut l1 = Conv::new(
             (16, image_depth, 3, 3),
             (2, 2),
-            initializer.clone(),
+            &initializer,
             Some(activation),
         );
-        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), initializer.clone(), None);
+        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
 
         for _ in 0..8 {
             let input = Array::from((
