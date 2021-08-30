@@ -515,6 +515,7 @@ impl Array {
 
         // count of leading dimensions
         let leading_count = input_dimensions.len().saturating_sub(op_dimension_count);
+        let output_leading_count = output_dimensions.len().saturating_sub(op_dimension_count);
 
         let unbroadcasted_group_length: usize = input_dimensions
             .iter()
@@ -605,8 +606,7 @@ impl Array {
                             }
                         }
 
-                        if i < output_dimensions.len().saturating_sub(op_dimension_count)
-                            && output_dimensions[i] != 1
+                        if i < output_leading_count && output_dimensions[i] != 1
                         {
                             output_offset += output_group_length;
                             output_slice = &mut output_values
