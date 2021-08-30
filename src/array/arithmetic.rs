@@ -19,7 +19,7 @@ impl Array {
 
         let self_length = *self.dimensions.last().unwrap();
         let other_length = *other.dimensions.last().unwrap();
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             for (i, output) in output_slice.iter_mut().enumerate() {
                 *output = f(arrays[0][i % self_length], arrays[1][i % other_length]);
             }
@@ -33,8 +33,8 @@ impl Array {
 
         let dimensions = Rc::new(dimensions);
         Array::sliced_op(
-            vec![&self, other],
-            &op,
+            vec![self, other],
+            &mut op,
             backward_op,
             &dimensions,
             &dimensions,
@@ -126,7 +126,7 @@ impl Array {
             return self.clone();
         }
 
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             output_slice[0] = arrays[0].iter().sum();
         });
 
@@ -144,7 +144,7 @@ impl Array {
             None
         } else {
             Some(Rc::new(move |c, _, x| {
-                let op: SlicedOp = Box::new(move |output_slice, arrays| {
+                let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
                     // propagate delta to each summed dimension
                     for output in output_slice.iter_mut() {
                         *output = arrays[0][0];
@@ -152,8 +152,8 @@ impl Array {
                 });
 
                 vec![Some(Array::sliced_op(
-                    vec![&x],
-                    &op,
+                    vec![x],
+                    &mut op,
                     None,
                     &target_clone,
                     &c[0].dimensions,
@@ -164,8 +164,8 @@ impl Array {
         };
 
         Array::sliced_op(
-            vec![&self],
-            &op,
+            vec![self],
+            &mut op,
             backward_op,
             &self.dimensions,
             &target_dimensions,

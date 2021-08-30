@@ -2,6 +2,8 @@
 
 pub mod conv;
 pub mod dense;
+pub mod pool;
+pub mod reshape;
 
 use crate::array::*;
 

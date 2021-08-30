@@ -71,6 +71,7 @@ mod tests {
     use super::*;
     use crate::layer::conv::Conv;
     use crate::layer::dense::Dense;
+    use crate::layer::pool::Pool;
     use crate::optimizer::gd::GradientDescent;
     use crate::{activation, cost, initializer};
 
@@ -142,6 +143,7 @@ mod tests {
                 let numerical_gradient = (error_plus - error_minus) / (2.0 * epsilon);
                 numerator += ((gradient[j] - numerical_gradient).abs()).powf(2.0);
                 denominator += ((gradient[j] + numerical_gradient).abs()).powf(2.0);
+                println!("{:?} {:?}", gradient[j], numerical_gradient);
             }
 
             numerator = numerator.sqrt();
@@ -182,7 +184,7 @@ mod tests {
 
         let (image_depth, image_rows, image_cols) = (3, 9, 9);
         let image_dimensions = vec![image_depth, image_rows, image_cols];
-        let output_dimensions = vec![1, 2, 2];
+        let output_dimensions = vec![1, 1, 1];
         let input_size = image_dimensions.iter().product();
         let output_size = output_dimensions.iter().product();
 
@@ -191,14 +193,18 @@ mod tests {
         let mse = cost::mse();
         let gd = GradientDescent::new(learning_rate);
 
+        // 3x9x9 -> 16x4x4
         let mut l1 = Conv::new(
             (16, image_depth, 3, 3),
             (2, 2),
             &initializer,
-            Some(activation),
+            Some(&activation),
         );
-        let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
-        let model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
+        // 16x4x4 -> 16x2x2
+        let mut l2 = Pool::new((2, 2), (2, 2));
+        // 16x2x2 -> 1x1x1
+        let mut l3 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
+        let model = Model::new(vec![&mut l1, &mut l2, &mut l3], &gd, &mse);
 
         let input = Array::from((
             image_dimensions,

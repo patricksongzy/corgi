@@ -7,22 +7,22 @@ use crate::layer::Layer;
 use crate::numbers::*;
 
 /// A convolutional neural network layer, storing the parameters of the layer.
-pub struct Conv {
+pub struct Conv<'a> {
     stride_dimensions: (usize, usize),
     filters: Array,
     biases: Array,
-    activation: Option<Activation>,
+    activation: Option<&'a Activation>,
 }
 
-impl Conv {
+impl<'a> Conv<'a> {
     /// Constructs a new convolutional layer, with given dimensions.
     /// The filter dimensions are filter count by image depth by filter rows by filter columns.
     pub fn new(
         filter_dimensions: (usize, usize, usize, usize),
         stride_dimensions: (usize, usize),
-        initializer: &Initializer,
-        activation: Option<Activation>,
-    ) -> Conv {
+        initializer: &'_ Initializer,
+        activation: Option<&'a Activation>,
+    ) -> Conv<'a> {
         let (filter_count, image_depth, filter_rows, filter_cols) = filter_dimensions;
 
         let filter_dimensions = vec![filter_count, image_depth, filter_rows, filter_cols];
@@ -50,7 +50,7 @@ impl Conv {
     }
 }
 
-impl Layer for Conv {
+impl Layer for Conv<'_> {
     fn forward(&self, input: Array) -> Array {
         let result = &input.conv(&self.filters, self.stride_dimensions) + &self.biases;
         match &self.activation {
@@ -88,7 +88,7 @@ mod tests {
             (16, image_depth, 3, 3),
             (2, 2),
             &initializer,
-            Some(activation),
+            Some(&activation),
         );
         let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
 

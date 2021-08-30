@@ -46,7 +46,7 @@ use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 /// The sliced operation computes an operation with respect to slices on a mutable output slice.
-type SlicedOp = Box<dyn Fn(&mut [Float], &[&[Float]])>;
+type SlicedOp = Box<dyn FnMut(&mut [Float], &[&[Float]])>;
 /// The forward operation computes an operation with respect to inputs.
 pub type ForwardOp = Rc<dyn Fn(&[&Array]) -> Array>;
 /// The backward operation computes deltas with respect to inputs.
@@ -492,7 +492,7 @@ impl Array {
     /// Panics if unable to broadcast the arrays to `input_dimensions`.
     fn sliced_op(
         arrays: Vec<&Array>,
-        op: &SlicedOp,
+        op: &mut SlicedOp,
         backward_op: Option<BackwardOp>,
         input_dimensions: &[usize],
         output_dimensions: &[usize],
@@ -649,7 +649,7 @@ impl Array {
         } else {
             let flatten_dimension_count = self.dimensions.len().saturating_sub(dimensions.len());
 
-            let op: SlicedOp = Box::new(move |output_slice, arrays| {
+            let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
                 let stride = output_slice.len();
                 for (i, output) in output_slice.iter_mut().enumerate() {
                     *output += arrays[0].iter().skip(i).step_by(stride).sum::<Float>();
@@ -658,7 +658,7 @@ impl Array {
 
             Array::sliced_op(
                 vec![&self],
-                &op,
+                &mut op,
                 None,
                 &self.dimensions,
                 &*dimensions,
@@ -956,11 +956,11 @@ mod tests {
     #[should_panic]
     fn test_sliced_op() {
         let a = arr![1.0];
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             output_slice[0] = arrays[0][0] + arrays[0][1];
         });
 
-        Array::sliced_op(vec![&a], &op, None, &[2], &[1], 0, 0);
+        Array::sliced_op(vec![&a], &mut op, None, &[2], &[1], 0, 0);
     }
 
     #[test]

@@ -8,7 +8,8 @@ use crate::blas::{daxpy_blas, matmul_blas};
 
 impl Array {
     /// Reshapes the array into different dimensions
-    pub fn reshape(&self, dimensions: Vec<usize>) -> Array {
+    pub fn reshape(&self, dimensions: &[usize]) -> Array {
+        let dimensions = dimensions.to_vec();
         let result = Array::from((dimensions, Rc::clone(&self.values)));
 
         if !self.is_tracked.get() {
@@ -16,7 +17,7 @@ impl Array {
         } else {
             let backward_op: BackwardOp = Rc::new(|c, t, x| {
                 vec![if t[0] {
-                    Some(x.reshape(c[0].dimensions.clone()))
+                    Some(x.reshape(&c[0].dimensions))
                 } else {
                     None
                 }]
@@ -36,7 +37,7 @@ impl Array {
         {
             let dimensions = element_wise_dimensions(&x.dimensions, &y.dimensions);
 
-            let op: SlicedOp = Box::new(move |output_slice, arrays| {
+            let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
                 output_slice.clone_from_slice(&arrays[1]);
                 daxpy_blas(alpha, arrays[0], output_slice);
             });
@@ -60,7 +61,7 @@ impl Array {
                 }))
             };
 
-            Array::sliced_op(vec![x, y], &op, backward_op, &dimensions, &dimensions, 1, 0)
+            Array::sliced_op(vec![x, y], &mut op, backward_op, &dimensions, &dimensions, 1, 0)
         }
     }
 
@@ -192,7 +193,7 @@ impl Array {
             false
         };
 
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             if set_output {
                 let slice_length = output_slice.len();
                 output_slice
@@ -248,7 +249,7 @@ impl Array {
         let c = if let Some(c) = c { c } else { &zeros };
         Array::sliced_op(
             vec![a, b, c],
-            &op,
+            &mut op,
             backward_op,
             &input_dimensions,
             &output_dimensions,
@@ -265,7 +266,7 @@ mod tests {
     #[test]
     fn test_reshape() {
         let a = arr![arr![1.0, 2.0], arr![3.0, 4.0]].tracked();
-        let reshaped = a.reshape(vec![1, 4]);
+        let reshaped = a.reshape(&[1, 4]);
         assert_eq!(reshaped, arr![arr![1.0, 2.0, 3.0, 4.0]]);
 
         reshaped.backward(None);

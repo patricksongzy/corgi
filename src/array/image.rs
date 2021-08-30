@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::array::*;
 
 impl Array {
@@ -34,7 +36,7 @@ impl Array {
             .chain(vec![unrolled_count, image_depth * unrolled_size])
             .collect();
 
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             let mut output_index = 0;
             for r in 0..row_stride_count {
                 for c in 0..col_stride_count {
@@ -56,20 +58,10 @@ impl Array {
             }
         });
 
-        let result = Array::sliced_op(
-            vec![image],
-            &op,
-            None,
-            &image.dimensions,
-            &output_dimensions,
-            3,
-            0,
-        );
-
-        if !image.is_tracked.get() {
-            result
+        let backward_op: Option<BackwardOp> = if !image.is_tracked.get() {
+            None
         } else {
-            let backward_op: BackwardOp = Rc::new(move |_, t, x| {
+            Some(Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::roll_blocks(
                         &x,
@@ -80,11 +72,18 @@ impl Array {
                 } else {
                     None
                 }]
-            });
-            result
-                .with_backward_op(backward_op)
-                .with_children(vec![image.clone()])
-        }
+            }))
+        };
+
+        Array::sliced_op(
+            vec![image],
+            &mut op,
+            backward_op,
+            &image.dimensions,
+            &output_dimensions,
+            3,
+            0,
+        )
     }
 
     /// Inverse of unrolling the blocks.
@@ -117,7 +116,7 @@ impl Array {
             .chain(vec![image_depth, image_rows, image_cols])
             .collect();
 
-        let op: SlicedOp = Box::new(move |output_slice, arrays| {
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
             for i in 0..unrolled_count {
                 let stride_offset = {
                     let stride_row_index = i / col_stride_count;
@@ -149,20 +148,10 @@ impl Array {
             }
         });
 
-        let result = Array::sliced_op(
-            vec![unrolled],
-            &op,
-            None,
-            &unrolled.dimensions,
-            &output_dimensions,
-            3,
-            0,
-        );
-
-        if !unrolled.is_tracked.get() {
-            result
+        let backward_op: Option<BackwardOp> = if !unrolled.is_tracked.get() {
+            None
         } else {
-            let backward_op: BackwardOp = Rc::new(move |_, t, x| {
+            Some(Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::unroll_blocks(
                         &x,
@@ -172,11 +161,18 @@ impl Array {
                 } else {
                     None
                 }]
-            });
-            result
-                .with_backward_op(backward_op)
-                .with_children(vec![unrolled.clone()])
-        }
+            }))
+        };
+
+        Array::sliced_op(
+            vec![unrolled],
+            &mut op,
+            backward_op,
+            &unrolled.dimensions,
+            &output_dimensions,
+            3,
+            0,
+        )
     }
 
     /// Transforms arrays of the form (output rows * output cols, depth) to (depth, output rows, output cols).
@@ -263,7 +259,7 @@ impl Array {
         let unrolled_size = unrolled.dimensions[unrolled_dimension_count - 1] / image_depth;
 
         // combine last three filter dimensions to single row to (filter count, unrolled size * image depth)
-        let filter_matrix_dimensions = filters
+        let filter_matrix_dimensions: Vec<usize> = filters
             .dimensions
             .iter()
             .cloned()
@@ -271,7 +267,7 @@ impl Array {
             .chain(vec![unrolled_size * image_depth])
             .collect();
 
-        let filter_matrix = filters.reshape(filter_matrix_dimensions);
+        let filter_matrix = filters.reshape(&filter_matrix_dimensions);
 
         // convert unrolled dimensions to (unrolled count, filter count)
         let convolved = Array::matmul((&unrolled, false), (&filter_matrix, true), None);
@@ -279,8 +275,72 @@ impl Array {
         convolved.expand_conv((row_stride_count, col_stride_count))
     }
 
-    // pub fn pool(&self, pool_dimensions: (usize, usize)) {
-    // }
+    /// Computes the max pooling of an array
+    pub fn pool(&self, pool_dimensions: (usize, usize), stride_dimensions: (usize, usize)) -> Array {
+        let (pool_rows, pool_cols) = pool_dimensions;
+        let (stride_rows, stride_cols) = stride_dimensions;
+
+        let dimension_count = self.dimensions.len();
+        let image_rows = self.dimensions[dimension_count - 2];
+        let image_cols = self.dimensions[dimension_count - 1];
+        let output_rows = (image_rows - pool_rows) / stride_rows + 1;
+        let output_cols = (image_cols - pool_cols) / stride_cols + 1;
+        let pooled = Rc::new(Cell::new(VecDeque::new()));
+        let cached = pooled.clone();
+        let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
+            for r in 0..output_rows {
+                for c in 0..output_cols {
+                    let strided_row = r * stride_rows;
+                    let strided_col = c * stride_cols;
+
+                    let mut start_col = 1;
+                    let mut max_indices = (strided_row, strided_col);
+                    let mut max = arrays[0][strided_col + image_cols * strided_row];
+                    for i in 0..pool_rows {
+                        for j in start_col..pool_cols {
+                            let value = arrays[0][(strided_col + j) + image_cols * (strided_row + i)];
+                            if value > max {
+                                max_indices = (strided_row + i, strided_col + j);
+                                max = value;
+                            }
+                        }
+
+                        start_col = 0;
+                    }
+
+                    output_slice[c + output_cols * r] = max;
+                    let mut current = pooled.take();
+                    current.push_back(max_indices);
+                    pooled.set(current);
+                }
+            }
+        });
+
+        let output_dimensions: Vec<usize> = self.dimensions.iter().take(dimension_count.saturating_sub(2)).copied().chain(vec![output_rows, output_cols]).collect();
+        let backward_op: Option<BackwardOp> = if !self.is_tracked.get() {
+            None
+        } else {
+            Some(Rc::new(move |c, _, x| {
+                let cached = cached.clone();
+                let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
+                    for r in 0..output_rows {
+                        for c in 0..output_cols {
+                            let mut current = cached.take();
+                            let (original_row, original_col) = current.pop_front().unwrap();
+                            output_slice[original_col + image_rows * original_row] += arrays[0][c + output_cols * r];
+                            cached.set(current);
+                        }
+                    }
+                });
+
+                vec![
+                    Some(Array::sliced_op(vec![x], &mut op, None, &x.dimensions, &c[0].dimensions, 2, 0))
+                ]
+            }))
+        };
+
+        Array::sliced_op(vec![self], &mut op, backward_op, &self.dimensions, &output_dimensions, 2, 0)
+    }
 }
 
 #[cfg(test)]
@@ -472,5 +532,38 @@ mod tests {
                 arr![arr![arr![178.0, 220.0]], arr![arr![514.0, 556.0]]]
             ]
         );
+    }
+
+    #[test]
+    fn test_pool() {
+        let a = arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0], arr![7.0, 8.0, 9.0]].tracked();
+
+        let result = a.pool((2, 2), (1, 1));
+        assert_eq!(result, arr![arr![5.0, 6.0], arr![8.0, 9.0]]);
+
+        result.backward(None);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![0.0, 0.0, 0.0], arr![0.0, 1.0, 1.0], arr![0.0, 1.0, 1.0]]);
+    }
+
+    #[test]
+    fn test_pool_depth() {
+        let a = arr![arr![arr![3.0, 1.0, 8.0], arr![2.0, 5.0, 6.0], arr![1.0, 8.0, 5.0]], arr![arr![6.0, 5.0, 6.0], arr![8.0, 7.0, 8.0], arr![1.0, 9.0, 9.0]]].tracked();
+
+        let result = a.pool((2, 2), (1, 1));
+        assert_eq!(result, arr![arr![arr![5.0, 8.0], arr![8.0, 8.0]], arr![arr![8.0, 8.0], arr![9.0, 9.0]]]);
+
+        result.backward(None);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![arr![0.0, 0.0, 1.0], arr![0.0, 1.0, 0.0], arr![0.0, 2.0, 0.0]], arr![arr![0.0, 0.0, 0.0], arr![1.0, 0.0, 1.0], arr![0.0, 2.0, 0.0]]]);
+    }
+
+    #[test]
+    fn test_pool_stride() {
+        let a = arr![arr![5.0, 2.0, 3.0, 8.0], arr![9.0, 4.0, 3.0, 3.0], arr![10.0, 5.0, 2.0, 1.0], arr![1.0, 3.0, 5.0, 3.0]].tracked();
+
+        let result = a.pool((2, 2), (2, 2));
+        assert_eq!(result, arr![arr![9.0, 8.0], arr![10.0, 5.0]]);
+
+        result.backward(None);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![arr![0.0, 0.0, 0.0, 1.0], arr![1.0, 0.0, 0.0, 0.0], arr![1.0, 0.0, 0.0, 0.0], arr![0.0, 0.0, 1.0, 0.0]]);
     }
 }
