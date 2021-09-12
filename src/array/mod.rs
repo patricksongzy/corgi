@@ -658,6 +658,7 @@ impl Array {
         } else {
             let flatten_dimension_count = self.dimensions.len().saturating_sub(dimensions.len());
 
+            let output_dimensions: Vec<usize> = vec![1; flatten_dimension_count].into_iter().chain(dimensions.iter().copied()).collect();
             let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
                 let stride = output_slice.len();
                 for (i, output) in output_slice.iter_mut().enumerate() {
@@ -670,10 +671,10 @@ impl Array {
                 &mut op,
                 None,
                 &self.dimensions,
-                &*dimensions,
+                &output_dimensions,
                 flatten_dimension_count + 1,
                 0,
-            )
+            ).reshape(dimensions)
         }
     }
 
@@ -1003,6 +1004,17 @@ mod tests {
         ];
         let result = b.flatten_to(&[3]);
         assert_eq!(result, arr![22.0, 26.0, 30.0]);
+    }
+
+    #[test]
+    fn test_flatten_remove_dimension() {
+        let a = arr![arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]]];
+        let result = a.flatten_to(&[2, 3]);
+        assert_eq!(result, arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0]]);
+
+        let b = arr![arr![1.0, 2.0, 3.0]];
+        let result = b.flatten_to(&[1, 1]);
+        assert_eq!(result, arr![arr![6.0]]);
     }
 
     #[test]

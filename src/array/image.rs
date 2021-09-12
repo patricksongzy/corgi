@@ -33,7 +33,7 @@ impl Array {
             .iter()
             .cloned()
             .take(dimension_count - 3)
-            .chain(vec![unrolled_count, image_depth * unrolled_size])
+            .chain(vec![1, unrolled_count, image_depth * unrolled_size])
             .collect();
 
         let mut op: SlicedOp = Box::new(move |output_slice, arrays| {
@@ -49,7 +49,7 @@ impl Array {
                                 let col_index = n + stride_cols * c;
                                 let input_index =
                                     col_index + image_cols * (row_index + image_rows * k);
-                                output_slice[output_index] = arrays[0][input_index];
+                                output_slice[output_index] += arrays[0][input_index];
                                 output_index += 1;
                             }
                         }
@@ -68,6 +68,7 @@ impl Array {
                         image_dimensions,
                         stride_dimensions,
                         filter_dimensions,
+                        true,
                     ))
                 } else {
                     None
@@ -92,6 +93,7 @@ impl Array {
         image_dimensions: (usize, usize, usize),
         stride_dimensions: (usize, usize),
         filter_dimensions: (usize, usize),
+        sum_contributions: bool,
     ) -> Array {
         let dimension_count = unrolled.dimensions.len();
         let (image_depth, image_rows, image_cols) = image_dimensions;
@@ -106,13 +108,11 @@ impl Array {
         // the number of values in strided to
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
 
-        let leading_dimensions = unrolled
+        let output_dimensions: Vec<usize> = unrolled
             .dimensions
             .iter()
             .copied()
-            .take(dimension_count - 2);
-
-        let output_dimensions: Vec<usize> = leading_dimensions
+            .take(dimension_count - 3)
             .chain(vec![image_depth, image_rows, image_cols])
             .collect();
 
@@ -143,7 +143,11 @@ impl Array {
                         filter_col_index + filter_row_offset + depth_offset + stride_offset
                     };
 
-                    output_slice[output_index] = arrays[0][input_index];
+                    if sum_contributions {
+                        output_slice[output_index] += arrays[0][input_index];
+                    } else {
+                        output_slice[output_index] = arrays[0][input_index];
+                    }
                 }
             }
         });
@@ -164,8 +168,11 @@ impl Array {
             }))
         };
 
+        let mut unrolled_dimensions = unrolled.dimensions.clone();
+        unrolled_dimensions.remove(unrolled_dimensions.len().saturating_sub(3));
+
         Array::sliced_op(
-            vec![unrolled],
+            vec![&unrolled.reshape(&unrolled_dimensions)],
             &mut op,
             backward_op,
             &unrolled.dimensions,
@@ -228,8 +235,6 @@ impl Array {
     pub fn conv(&self, filters: &Array, stride_dimensions: (usize, usize)) -> Array {
         let dimension_count = self.dimensions.len();
         let filter_dimension_count = filters.dimensions.len();
-        // the number of dimensions for the unrolled image
-        let unrolled_dimension_count = dimension_count - 1;
 
         assert!(
             dimension_count >= 3 && filter_dimension_count >= 3,
@@ -256,7 +261,7 @@ impl Array {
 
         // convert image dimensions to (unrolled count, unrolled size * image depth)
         let unrolled = Array::unroll_blocks(&self, stride_dimensions, filter_dimensions);
-        let unrolled_size = unrolled.dimensions[unrolled_dimension_count - 1] / image_depth;
+        let unrolled_size = unrolled.dimensions[dimension_count - 1] / image_depth;
 
         // combine last three filter dimensions to single row to (filter count, unrolled size * image depth)
         let filter_matrix_dimensions: Vec<usize> = filters
@@ -272,7 +277,10 @@ impl Array {
         // convert unrolled dimensions to (unrolled count, filter count)
         let convolved = Array::matmul((&unrolled, false), (&filter_matrix, true), None);
         // convert convolved dimensions to (filter count, row stride count, col stride count)
-        convolved.expand_conv((row_stride_count, col_stride_count))
+        let expanded = convolved.expand_conv((row_stride_count, col_stride_count));
+        let mut output_dimensions = expanded.dimensions.clone();
+        output_dimensions.remove(output_dimensions.len().saturating_sub(4));
+        expanded.reshape(&output_dimensions)
     }
 
     /// Computes the max pooling of an array
@@ -371,14 +379,14 @@ mod tests {
         let result = Array::unroll_blocks(&a, (1, 1), (2, 2));
         assert_eq!(
             result,
-            arr![
+            arr![arr![
                 arr![1.0, 2.0, 4.0, 5.0],
                 arr![2.0, 3.0, 5.0, 6.0],
                 arr![4.0, 5.0, 7.0, 8.0],
                 arr![5.0, 6.0, 8.0, 9.0]
-            ]
+            ]]
         );
-        let rolled = Array::roll_blocks(&result, (1, 3, 3), (1, 1), (2, 2));
+        let rolled = Array::roll_blocks(&result, (1, 3, 3), (1, 1), (2, 2), false);
         assert_eq!(rolled, a);
     }
 
@@ -392,14 +400,14 @@ mod tests {
         let result = Array::unroll_blocks(&a, (1, 1), (2, 3));
         assert_eq!(
             result,
-            arr![
+            arr![arr![
                 arr![1.0, 2.0, 3.0, 5.0, 6.0, 7.0],
                 arr![2.0, 3.0, 4.0, 6.0, 7.0, 8.0],
                 arr![5.0, 6.0, 7.0, 9.0, 10.0, 11.0],
                 arr![6.0, 7.0, 8.0, 10.0, 11.0, 12.0]
-            ]
+            ]]
         );
-        let rolled = Array::roll_blocks(&result, (1, 3, 4), (1, 1), (2, 3));
+        let rolled = Array::roll_blocks(&result, (1, 3, 4), (1, 1), (2, 3), false);
         assert_eq!(rolled, a);
     }
 
@@ -412,14 +420,14 @@ mod tests {
         let result = Array::unroll_blocks(&a, (1, 2), (1, 2));
         assert_eq!(
             result,
-            arr![
+            arr![arr![
                 arr![1.0, 2.0, 9.0, 10.0],
                 arr![3.0, 4.0, 11.0, 12.0],
                 arr![5.0, 6.0, 13.0, 14.0],
                 arr![7.0, 8.0, 15.0, 16.0]
-            ],
+            ]],
         );
-        let rolled = Array::roll_blocks(&result, (2, 2, 4), (1, 2), (1, 2));
+        let rolled = Array::roll_blocks(&result, (2, 2, 4), (1, 2), (1, 2), false);
         assert_eq!(rolled, a);
     }
 
@@ -532,6 +540,26 @@ mod tests {
                 arr![arr![arr![178.0, 220.0]], arr![arr![514.0, 556.0]]]
             ]
         );
+    }
+
+    #[test]
+    fn test_conv_batched() {
+        let a = arr![
+            arr![arr![arr![1.0, 2.0, 3.0], arr![4.0, 5.0, 6.0], arr![7.0, 8.0, 9.0]]],
+            arr![arr![arr![3.0, 2.0, 1.0], arr![2.0, 1.0, 2.0], arr![1.0, 2.0, 3.0]]]
+        ].tracked();
+
+        let filters = arr![arr![arr![6.0, 3.0], arr![2.0, 5.0]]].tracked();
+
+        let conv = a.conv(&filters, (1, 1));
+        assert_eq!(conv, arr![arr![arr![arr![45.0, 61.0], arr![93.0, 109.0]]], arr![arr![arr![33.0, 27.0], arr![27.0, 31.0]]]]);
+
+        conv.backward(None);
+        assert_eq!(filters.gradient().to_owned().unwrap(), arr![arr![arr![20.0, 22.0], arr![30.0, 36.0]]]);
+        assert_eq!(a.gradient().to_owned().unwrap(), arr![
+            arr![arr![arr![6.0, 9.0, 3.0], arr![8.0, 16.0, 8.0], arr![2.0, 7.0, 5.0]]],
+            arr![arr![arr![6.0, 9.0, 3.0], arr![8.0, 16.0, 8.0], arr![2.0, 7.0, 5.0]]]
+        ]);
     }
 
     #[test]

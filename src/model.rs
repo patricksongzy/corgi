@@ -140,7 +140,7 @@ impl<'a> Model<'a> {
 
             let norm = numerator / denominator;
 
-            println!("{}", norm);
+            println!("norm: {}", norm);
             assert!(norm < epsilon);
         }
     }
@@ -183,16 +183,17 @@ mod tests {
 
         let learning_rate = 0.0;
 
+        let batch_size = 1;
         let (image_depth, image_rows, image_cols) = (3, 9, 9);
-        let image_dimensions = vec![image_depth, image_rows, image_cols];
-        let output_dimensions = vec![5];
+        let image_dimensions = vec![batch_size, image_depth, image_rows, image_cols];
+        let output_dimensions = vec![batch_size, 5];
         let input_size = image_dimensions.iter().product();
         let output_size = output_dimensions.iter().product();
 
         let initializer = initializer::he();
         let relu = activation::relu();
         let softmax = activation::softmax();
-        let mse = cost::cross_entropy();
+        let cross_entropy = cost::cross_entropy();
         let gd = GradientDescent::new(learning_rate);
 
         // 3x9x9 -> 16x4x4
@@ -208,7 +209,7 @@ mod tests {
         let mut l3 = Conv::new((8, 16, 2, 2), (2, 2), &initializer, None);
         let mut l4 = Reshape::new(vec![8]);
         let mut l5 = Dense::new(8, 5, &initializer, Some(&softmax));
-        let mut model = Model::new(vec![&mut l1, &mut l2, &mut l3, &mut l4, &mut l5], &gd, &mse);
+        let mut model = Model::new(vec![&mut l1, &mut l2, &mut l3, &mut l4, &mut l5], &gd, &cross_entropy);
 
         let input = Array::from((
             image_dimensions,
@@ -224,7 +225,7 @@ mod tests {
                 .collect::<Vec<Float>>(),
         ));
 
-        model.test_gradient(&mse, input, target);
+        model.test_gradient(&cross_entropy, input, target);
     }
 
     #[test]
