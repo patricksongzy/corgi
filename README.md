@@ -17,6 +17,10 @@
 <hr>
 
 ```rust
+let l1 = Dense::new(input_size, hidden_size, &initializer, Some(&relu));
+let l2 = Dense::new(hidden_size, output_size, &initializer, Some(&softmax));
+let mut model = Model::new(vec![&mut l1, &mut l2], &gradient_descent, &cross_entropy);
+
 for _ in 0..iterations {
     // array operations are never in-place for corgi, so values never change
     let input = Array::from((vec![batch_size, input_size], vec![...]));
