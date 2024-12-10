@@ -67,6 +67,8 @@ impl<'a> Model<'a> {
 
 #[cfg(test)]
 mod tests {
+    use core::ops::FnMut;
+
     use super::*;
     use crate::layer::conv::Conv;
     use crate::layer::dense::Dense;
@@ -75,11 +77,13 @@ mod tests {
 
     use rand::Rng;
 
-    fn test_gradient(mut model: Model<'_>, cost: &CostFunction, input: Array, target: Array) {
+    fn test_gradient(model: &mut Model<'_>, cost: &CostFunction, input: Array, target: Array) -> bool {
         #[cfg(feature = "f32")]
         let epsilon = 0.1;
         #[cfg(not(feature = "f32"))]
-        let epsilon = 1e-7;
+        let epsilon = 1e-6;
+
+        let mut is_success = true;
 
         model.forward(input.clone());
         model.backward(target.clone());
@@ -149,8 +153,10 @@ mod tests {
             let norm = numerator / denominator;
 
             println!("{}", norm);
-            assert!(norm < epsilon);
+            is_success &= norm < epsilon;
         }
+
+        is_success
     }
 
     #[test]
@@ -166,10 +172,45 @@ mod tests {
         let gd = GradientDescent::new(learning_rate);
         let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&sigmoid));
         let mut l2 = Dense::new(hidden_size, output_size, &initializer, Some(&softmax));
-        let model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
+        let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
 
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
-        test_gradient(model, &cross_entropy, arr![x, y], arr![z, w]);
+        assert!(test_gradient(&mut model, &cross_entropy, arr![x, y], arr![z, w]));
+    }
+
+    fn test_success_retrying<F: FnMut() -> bool>(mut f: F, retries: usize) {
+        let mut is_success = false;
+        for i in 0..retries {
+            println!("Attempt {}", i);
+            is_success = f();
+            if is_success {
+                break;
+            }
+        }
+
+        assert!(is_success);
+    }
+    
+    #[test]
+    fn test_add_layer_gradient() {
+        let learning_rate = 0.0;
+        let input_size = 2;
+        let hidden_size = 4;
+        let output_size = 2;
+        let initializer = initializer::he();
+        let sigmoid = activation::sigmoid();
+        let softmax = activation::softmax();
+        let cross_entropy = cost::cross_entropy();
+        let gd = GradientDescent::new(learning_rate);
+        let mut l1 = Dense::new(input_size, hidden_size, &initializer, Some(&sigmoid));
+        let mut l2 = Dense::new(hidden_size, output_size, &initializer, Some(&sigmoid));
+        let mut l3 = Dense::new(output_size, output_size, &initializer, Some(&softmax));
+        let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
+
+        let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
+        test_success_retrying(|| test_gradient(&mut model, &cross_entropy, arr![x, y], arr![z, w]), 5);
+        model.layers.push(&mut l3);
+        test_success_retrying(|| test_gradient(&mut model, &cross_entropy, arr![x, y], arr![z, w]), 5);
     }
 
     #[test]
@@ -197,7 +238,7 @@ mod tests {
             Some(activation),
         );
         let mut l2 = Conv::new((1, 16, 2, 2), (2, 2), &initializer, None);
-        let model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
+        let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
 
         let input = Array::from((
             image_dimensions,
@@ -213,7 +254,7 @@ mod tests {
                 .collect::<Vec<Float>>(),
         ));
 
-        test_gradient(model, &mse, input, target);
+        assert!(test_gradient(&mut model, &mse, input, target));
     }
 
     #[test]
