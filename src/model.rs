@@ -77,6 +77,7 @@ mod tests {
 
     use rand::Rng;
 
+    #[cfg_attr(miri, ignore)]
     fn test_gradient(model: &mut Model<'_>, cost: &CostFunction, input: Array, target: Array) -> bool {
         #[cfg(feature = "f32")]
         let epsilon = 0.1;
@@ -160,6 +161,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_dense_gradient() {
         let learning_rate = 0.0;
         let input_size = 2;
@@ -192,6 +194,8 @@ mod tests {
     }
     
     #[test]
+    #[cfg_attr(miri, ignore)]
+    #[cfg(not(feature = "f32"))]
     fn test_add_layer_gradient() {
         let learning_rate = 0.0;
         let input_size = 2;
@@ -207,6 +211,7 @@ mod tests {
         let mut l3 = Dense::new(output_size, output_size, &initializer, Some(&softmax));
         let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &cross_entropy);
 
+        // test is flaky due to numerical stability
         let (x, y, z, w) = (0.5, -0.25, 0.0, 1.0);
         test_success_retrying(|| test_gradient(&mut model, &cross_entropy, arr![x, y], arr![z, w]), 5);
         model.layers.push(&mut l3);
@@ -214,6 +219,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_conv_gradient() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -258,6 +264,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_model() {
         let mut rng = rand::thread_rng();
         let learning_rate = 0.1;

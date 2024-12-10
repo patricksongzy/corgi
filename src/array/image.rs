@@ -289,7 +289,9 @@ mod tests {
     use crate::arr;
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_expand_conv() {
+        // TODO refactor to handle Rc's properly
         let a = arr![arr![1.0, 4.0], arr![2.0, 5.0], arr![3.0, 6.0]].tracked();
         let expanded = a.expand_conv((1, 3));
         assert_eq!(

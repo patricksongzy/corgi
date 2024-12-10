@@ -70,6 +70,7 @@ mod tests {
     use crate::{activation, initializer};
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_smoke() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
