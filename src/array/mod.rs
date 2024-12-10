@@ -36,7 +36,7 @@ use crate::numbers::*;
 use approx::{AbsDiffEq, RelativeEq};
 
 use std::cmp;
-use std::convert::{From, Into};
+use std::convert::From;
 use std::fmt;
 
 use std::ops;
@@ -116,8 +116,7 @@ impl From<Vec<Array>> for Array {
         // take ownership if possible, but clone otherwise
         let values: Vec<Float> = contents
             .into_iter()
-            .map(|array| Rc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
-            .flatten()
+            .flat_map(|array| Rc::try_unwrap(array.values).unwrap_or_else(|x| (*x).clone()))
             .collect();
 
         Array::from((dimensions, values))
@@ -212,9 +211,9 @@ impl From<(Vec<usize>, Rc<Vec<Float>>)> for Array {
     }
 }
 
-impl Into<Vec<Float>> for Array {
-    fn into(self) -> Vec<Float> {
-        Rc::try_unwrap(self.values).unwrap()
+impl From<Array> for Vec<Float> {
+    fn from(x: Array) -> Self {
+        Rc::try_unwrap(x.values).unwrap()
     }
 }
 
@@ -242,15 +241,18 @@ impl Into<Vec<Float>> for Array {
 /// ```
 #[macro_export]
 macro_rules! arr {
+    // https://doc.rust-lang.org/book/ch19-06-macros.html#declarative-macros-with-macro_rules-for-general-metaprogramming
     ( $( $x:expr ),* ) => {
         {
-            let mut values = Vec::new();
+            #[allow(clippy::vec_init_then_push)]
+            {
+                let mut values = Vec::new();
 
-            $(
-                values.push($x);
-            )*
-
-            Array::from(values)
+                $(
+                    values.push($x);
+                )*
+                Array::from(values)
+            }
         }
     };
 }
@@ -286,7 +288,7 @@ impl Array {
 
     /// Returns an immutable reference to the values of the array in row-major order.
     pub fn values(&self) -> &[Float] {
-        &*self.values
+        &self.values
     }
 
     /// Returns a reference to the gradient option of the array.
@@ -634,7 +636,7 @@ impl Array {
                 &op,
                 None,
                 &self.dimensions,
-                &*dimensions,
+                dimensions,
                 flatten_dimension_count + 1,
                 0,
             )
@@ -648,8 +650,8 @@ impl Array {
     /// * `arrays` - The arrays to perform the operations on.
     /// * `op` - The `ForwardOp`, which takes in the arrays, and outputs another array.
     /// * `backward_op` - The `BackwardOp`, which takes in the arrays, and the delta, and outputs a
-    /// new delta, with respect to each input. It is recommended that any array operations here are
-    /// untracked, unless interested in higher order derivatives.
+    ///   new delta, with respect to each input. It is recommended that any array operations here are
+    ///   untracked, unless interested in higher order derivatives.
     ///
     /// # Examples
     ///
@@ -704,11 +706,7 @@ impl Array {
 
 impl Clone for Array {
     fn clone(&self) -> Array {
-        let backward_op = match &self.backward_op {
-            Some(x) => Some(Rc::clone(&x)),
-            None => None,
-        };
-
+        let backward_op = self.backward_op.as_ref().map(|x| Rc::clone(x));
         Array {
             dimensions: self.dimensions.clone(),
             values: Rc::clone(&self.values),
@@ -796,7 +794,7 @@ impl Index<Vec<usize>> for Array {
     type Output = Float;
 
     fn index(&self, indices: Vec<usize>) -> &Self::Output {
-        &self.values[flatten_indices(&indices, &*self.dimensions)]
+        &self.values[flatten_indices(&indices, &self.dimensions)]
     }
 }
 
@@ -867,7 +865,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_invalid_dimensions() {
-        arr![arr![arr![0.0], arr![1.0]], arr![arr![2.0, 3.0], arr![4.0]]];
+        let _ = arr![arr![arr![0.0], arr![1.0]], arr![arr![2.0, 3.0], arr![4.0]]];
     }
 
     #[test]

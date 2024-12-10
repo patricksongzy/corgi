@@ -72,7 +72,7 @@ impl Array {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::roll_blocks(
-                        &x,
+                        x,
                         image_dimensions,
                         stride_dimensions,
                         filter_dimensions,
@@ -165,7 +165,7 @@ impl Array {
             let backward_op: BackwardOp = Rc::new(move |_, t, x| {
                 vec![if t[0] {
                     Some(Array::unroll_blocks(
-                        &x,
+                        x,
                         stride_dimensions,
                         filter_dimensions,
                     ))
@@ -259,7 +259,7 @@ impl Array {
         let col_stride_count = (image_cols - filter_cols) / stride_cols + 1;
 
         // convert image dimensions to (unrolled count, unrolled size * image depth)
-        let unrolled = Array::unroll_blocks(&self, stride_dimensions, filter_dimensions);
+        let unrolled = Array::unroll_blocks(self, stride_dimensions, filter_dimensions);
         let unrolled_size = unrolled.dimensions[unrolled_dimension_count - 1] / image_depth;
 
         // combine last three filter dimensions to single row to (filter count, unrolled size * image depth)

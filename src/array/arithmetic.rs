@@ -11,9 +11,9 @@ pub(crate) fn mul_values(a: &[Float], b: &[Float]) -> Vec<Float> {
 
 impl Array {
     #[inline]
-    fn element_wise_op<F: 'static>(&self, other: &Array, f: F, backward_op: BackwardOp) -> Array
+    fn element_wise_op<F>(&self, other: &Array, f: F, backward_op: BackwardOp) -> Array
     where
-        F: Fn(Float, Float) -> Float,
+        F: 'static + Fn(Float, Float) -> Float,
     {
         let dimensions = element_wise_dimensions(&self.dimensions, &other.dimensions);
 

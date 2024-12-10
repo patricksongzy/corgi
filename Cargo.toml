@@ -21,7 +21,7 @@ panic = "abort"
 [dependencies]
 rand = "0.8.3"
 approx = "0.4.0"
-mimalloc = { version = "0.1.26", default-features=false }
+mimalloc = { version = "0.1.26", default-features=false, optional = true }
 cblas-sys = { version = "0.1.4", optional = true }
 openblas-src = { version = "0.10.4", optional = true}
 netlib-src = { version = "0.8.0", optional = true}
@@ -29,5 +29,6 @@ netlib-src = { version = "0.8.0", optional = true}
 [features]
 f32 = []
 blas = []
+mimalloc = ["dep:mimalloc"]
 openblas = ["blas", "cblas-sys", "openblas-src/static"]
 netlib = ["blas", "cblas-sys", "netlib-src/static"]

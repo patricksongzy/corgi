@@ -43,7 +43,7 @@ impl<'a> Model<'a> {
     /// Computes the backward pass of a model, and updates parameters.
     pub fn backward(&mut self, target: Array) -> Float {
         let output = self.output.as_ref().unwrap();
-        let error = (self.cost)(&output, &target);
+        let error = (self.cost)(output, &target);
         error.backward(None);
 
         error.sum_all()
@@ -60,8 +60,7 @@ impl<'a> Model<'a> {
     fn parameters(&mut self) -> Vec<&mut Array> {
         self.layers
             .iter_mut()
-            .map(|l| l.parameters())
-            .flatten()
+            .flat_map(|l| l.parameters())
             .collect()
     }
 }

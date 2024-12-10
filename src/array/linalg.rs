@@ -232,9 +232,9 @@ impl Array {
                     },
                     if t[1] {
                         Some(if b_transpose {
-                            Array::matmul((&x, true), (&c[0], a_transpose), None)
+                            Array::matmul((x, true), (&c[0], a_transpose), None)
                         } else {
-                            Array::matmul((&c[0], !a_transpose), (&x, false), None)
+                            Array::matmul((&c[0], !a_transpose), (x, false), None)
                         })
                     } else {
                         None
@@ -250,7 +250,7 @@ impl Array {
             vec![a, b, c],
             &op,
             backward_op,
-            &input_dimensions,
+            input_dimensions,
             &output_dimensions,
             2,
             0,
