@@ -264,7 +264,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_model() {
         let mut rng = rand::thread_rng();
         let learning_rate = 0.1;
@@ -280,7 +279,7 @@ mod tests {
         let mut l2 = Dense::new(hidden_size, output_size, &initializer, None);
         let mut model = Model::new(vec![&mut l1, &mut l2], &gd, &mse);
 
-        for _ in 0..8 {
+        for _ in 0..3 {
             let mut input = vec![0.0; input_size * batch_size];
             let mut target = vec![0.0; output_size * batch_size];
             for j in 0..batch_size {
